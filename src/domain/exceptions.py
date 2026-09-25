@@ -19,6 +19,12 @@ class InvalidTransactionDateError(DomainException):
     pass
 
 
+class InvalidTransactionCategoryError(DomainException):
+    """Raised when transaction category is missing or blank."""
+
+    pass
+
+
 class TransactionNotFoundError(DomainException):
     """Raised when a transaction is not found."""
 

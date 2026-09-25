@@ -26,27 +26,32 @@ TODAY = date.today().isoformat()
 TOMORROW = (date.today() + timedelta(days=1)).isoformat()
 
 SUMMARY = {
+    # Mirrors the real DashboardSummarySerializer: one `date`, no investment or
+    # savings totals, plus freshness metadata.
+    "id": "5a0b1c22-0000-4000-8000-000000000001",
     "period": "daily",
+    "date": "2026-09-26",
     "total_income": "100.00",
     "total_expense": "50.00",
-    "total_investment": "10.00",
-    "total_savings": "5.00",
     "net_balance": "35.00",
-    "start_date": "2026-09-26",
-    "end_date": "2026-09-26",
+    "generated_at": "2026-09-26T10:00:00Z",
+    "is_stale": False,
+    "stale_at": None,
+    "status": "fresh",
 }
 
 TRANSACTIONS_PAGE = {
     "count": 1,
-    "next": None,
-    "previous": None,
+    "page": 1,
+    "page_size": 20,
     "results": [
         {
             "id": "txn-1",
-            "type": "expense",
+            "transaction_type": "expense",
             "amount": "42.50",
+            "category": "Food",
+            "date": "2026-09-20",
             "description": "Coffee",
-            "date": "2026-09-26",
         }
     ],
 }
@@ -253,6 +258,30 @@ class TestDashboardRendering:
         assert "This Month" in body
 
     @respx.mock
+    def test_dashboard_renders_negative_net_balance(self, client):
+        """17 of 244 real summaries are negative; they must render, not 500."""
+        authenticate(client)
+        respx.get(f"{BASE}/dashboard/overview/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "as_of_date": "2026-09-26",
+                    "today": {
+                        **SUMMARY,
+                        "total_income": "0.00",
+                        "total_expense": "340.00",
+                        "net_balance": "-340.00",
+                    },
+                    "this_week": None,
+                    "this_month": None,
+                },
+            )
+        )
+        response = client.get("/dashboard/")
+        assert response.status_code == 200
+        assert b"-$340.00" in response.data
+
+    @respx.mock
     def test_dashboard_degrades_gracefully_on_backend_error(self, client):
         authenticate(client)
         respx.get(f"{BASE}/dashboard/overview/").mock(return_value=httpx.Response(500))
@@ -314,8 +343,28 @@ class TestTransactionsRendering:
         assert response.status_code == 200
         assert "Coffee" in body
         assert "-$42.50" in body
-        assert "Sep 26, 2026" in body
+        assert "Sep 20, 2026" in body
+        # The category from the API is shown alongside the type.
+        assert "Food" in body
         assert "Page 1" in body
+
+    @respx.mock
+    def test_transactions_list_tolerates_null_description(self, client):
+        authenticate(client)
+        respx.get(f"{BASE}/transactions/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    **TRANSACTIONS_PAGE,
+                    "results": [
+                        {**TRANSACTIONS_PAGE["results"][0], "description": None}
+                    ],
+                },
+            )
+        )
+        response = client.get("/transactions/")
+        assert response.status_code == 200
+        assert b"No description" in response.data
 
     @respx.mock
     def test_transactions_empty_state(self, client):
@@ -358,10 +407,11 @@ class TestTransactionCreation:
                 201,
                 json={
                     "id": "txn-new",
-                    "type": "expense",
+                    "transaction_type": "expense",
                     "amount": "25.00",
+                    "category": "Food",
                     "description": "Lunch",
-                    "date": "2026-09-26",
+                    "date": TODAY,
                 },
             )
         )
@@ -371,18 +421,52 @@ class TestTransactionCreation:
                 "type": "expense",
                 "amount": "25.00",
                 "description": "Lunch",
+                "category": "Food",
                 "date": TODAY,
                 "csrf_token": csrf_token,
             },
         )
         assert response.status_code == 302
         body = json.loads(route.calls[0].request.content)
+        # Must match the backend's CreateTransactionSerializer field names.
         assert body == {
-            "type": "expense",
+            "transaction_type": "expense",
             "amount": "25.00",
+            "category": "Food",
             "description": "Lunch",
             "date": TODAY,
         }
+
+    @respx.mock
+    def test_create_transaction_defaults_blank_category(self, client, csrf_token):
+        authenticate(client)
+        route = respx.post(f"{BASE}/transactions/").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "id": "txn-new",
+                    "transaction_type": "expense",
+                    "amount": "5.00",
+                    "category": "General",
+                    "description": "Coffee",
+                    "date": TODAY,
+                },
+            )
+        )
+        # A blank category is rejected with a 400 by the backend, so the view
+        # substitutes the domain default instead.
+        client.post(
+            "/transactions/create",
+            data={
+                "type": "expense",
+                "amount": "5.00",
+                "description": "Coffee",
+                "category": "   ",
+                "date": TODAY,
+                "csrf_token": csrf_token,
+            },
+        )
+        assert json.loads(route.calls[0].request.content)["category"] == "General"
 
     @respx.mock
     def test_create_transaction_requires_csrf(self, client):

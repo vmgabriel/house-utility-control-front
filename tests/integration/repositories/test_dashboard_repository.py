@@ -1,5 +1,7 @@
 """Integration tests for dashboard repository."""
 
+from datetime import date
+
 import httpx
 import pytest
 import respx
@@ -11,14 +13,27 @@ from src.infrastructure.repositories.dashboard_repository import (
 )
 
 SUMMARY_JSON = {
+    "id": "5a0b1c22-0000-4000-8000-000000000001",
     "period": "daily",
+    "date": "2026-09-26",
     "total_income": "100.00",
     "total_expense": "50.00",
-    "total_investment": "10.00",
-    "total_savings": "5.00",
     "net_balance": "35.00",
-    "start_date": "2026-09-26",
-    "end_date": "2026-09-26",
+    "generated_at": "2026-09-26T10:00:00Z",
+    "is_stale": False,
+    "stale_at": None,
+    "status": "fresh",
+}
+
+#: The real GET /dashboard/{period}/ envelope (DashboardListSerializer).
+LIST_ENVELOPE_JSON = {
+    "period": "daily",
+    "start_date": "2026-09-01",
+    "end_date": "2026-09-30",
+    "summary_count": 2,
+    "is_empty": False,
+    "has_stale_data": False,
+    "summaries": [SUMMARY_JSON, SUMMARY_JSON],
 }
 
 
@@ -74,15 +89,56 @@ class TestDRFDashboardRepository:
         self, dashboard_repository, period
     ):
         route = respx.get(f"http://testserver/api/v1/dashboard/{period}/").mock(
-            return_value=httpx.Response(200, json=[SUMMARY_JSON, SUMMARY_JSON])
+            return_value=httpx.Response(200, json=LIST_ENVELOPE_JSON)
         )
         summaries = await getattr(dashboard_repository, f"get_{period}_summary")(
             "access-token"
         )
 
+        # The dict envelope must be unwrapped into the two summaries it carries.
         assert len(summaries) == 2
         assert all(isinstance(s, DashboardSummary) for s in summaries)
         assert route.called
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_period_summaries_accept_a_bare_list_too(self, dashboard_repository):
+        respx.get("http://testserver/api/v1/dashboard/daily/").mock(
+            return_value=httpx.Response(200, json=[SUMMARY_JSON])
+        )
+        assert len(await dashboard_repository.get_daily_summary("access-token")) == 1
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_empty_envelope_yields_no_summaries(self, dashboard_repository):
+        respx.get("http://testserver/api/v1/dashboard/daily/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "period": "daily",
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                    "summary_count": 0,
+                    "is_empty": True,
+                    "has_stale_data": False,
+                    "summaries": [],
+                },
+            )
+        )
+        assert await dashboard_repository.get_daily_summary("access-token") == []
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_summary_without_investment_totals_degrades_to_zero(
+        self, dashboard_repository
+    ):
+        respx.get("http://testserver/api/v1/dashboard/weekly/").mock(
+            return_value=httpx.Response(200, json=LIST_ENVELOPE_JSON)
+        )
+        summary = (await dashboard_repository.get_weekly_summary("access-token"))[0]
+        assert str(summary.total_investment) == "0.00"
+        assert str(summary.total_savings) == "0.00"
+        assert summary.start_date == date(2026, 9, 26)
 
     @pytest.mark.asyncio
     @respx.mock

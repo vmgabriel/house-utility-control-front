@@ -49,6 +49,7 @@ class TransactionViewModel:
     amount: str
     amount_formatted: str
     description: str
+    category: str
     date: str
     date_formatted: str
     css_class: str
@@ -102,6 +103,7 @@ class TransactionViewModel:
             amount=amount_str,
             amount_formatted=amount_formatted,
             description=transaction.description,
+            category=transaction.category,
             date=transaction.date.isoformat(),
             date_formatted=date_formatted,
             css_class=config["css"],

@@ -18,7 +18,7 @@ from src.application.use_cases.transactions import (
     DeleteTransactionUseCase,
     FetchTransactionsUseCase,
 )
-from src.domain.entities import Transaction
+from src.domain.entities import DEFAULT_CATEGORY, Transaction
 from src.domain.exceptions import DomainException
 from src.domain.value_objects import Money, TransactionId, TransactionType, UserId
 from src.infrastructure.auth.csrf import CSRFTokenManager
@@ -28,6 +28,10 @@ from src.interfaces.web.viewmodels import TransactionViewModel
 transactions_bp = Blueprint("transactions", __name__, url_prefix="/transactions")
 
 PAGE_SIZE = 20
+
+#: Offered as datalist suggestions in the create form. The API accepts any
+#: non-blank string up to 100 characters, so this is a convenience, not a limit.
+CATEGORY_SUGGESTIONS = ("General", "Food", "Transport", "Salary", "Housing", "Other")
 
 
 def _csrf_ok() -> bool:
@@ -70,7 +74,10 @@ async def index():
 
     viewmodels = [TransactionViewModel.from_domain(tx) for tx in transactions]
     return render_template(
-        "transactions/index.html", transactions=viewmodels, page=page
+        "transactions/index.html",
+        transactions=viewmodels,
+        page=page,
+        category_suggestions=CATEGORY_SUGGESTIONS,
     )
 
 
@@ -90,6 +97,9 @@ async def create():
     tx_type = request.form.get("type", "expense")
     amount_str = request.form.get("amount", "0.00")
     description = request.form.get("description", "").strip()
+    # The backend requires a non-blank category, so fall back to the domain
+    # default rather than letting the API reject the request with a 400.
+    category = request.form.get("category", "").strip() or DEFAULT_CATEGORY
     date_str = request.form.get("date") or date.today().isoformat()
 
     try:
@@ -101,6 +111,7 @@ async def create():
             amount=Money(Decimal(amount_str)),
             description=description,
             date=date.fromisoformat(date_str),
+            category=category,
         )
     except (InvalidOperation, ValueError) as exc:
         # Invalid Decimal, unknown transaction type, malformed date, or a

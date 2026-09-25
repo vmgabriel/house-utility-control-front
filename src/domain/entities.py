@@ -3,7 +3,15 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from .value_objects import Money, TransactionId, TransactionType, UserId
+from .value_objects import (
+    Money,
+    SignedMoney,
+    TransactionId,
+    TransactionType,
+    UserId,
+)
+
+DEFAULT_CATEGORY = "General"
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +35,9 @@ class Transaction:
     amount: Money
     description: str
     date: date
+    # The DRF backend requires a category on create; the default keeps
+    # programmatic construction convenient without weakening the API contract.
+    category: str = DEFAULT_CATEGORY
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -34,11 +45,17 @@ class Transaction:
         """Validate transaction rules."""
         from .exceptions import (
             InvalidTransactionAmountError,
+            InvalidTransactionCategoryError,
             InvalidTransactionDateError,
         )
 
         if self.amount.amount <= 0:
             raise InvalidTransactionAmountError("Transaction amount must be positive")
+
+        if not self.category.strip():
+            raise InvalidTransactionCategoryError(
+                "Transaction category cannot be blank"
+            )
 
         if self.date > current_date:
             raise InvalidTransactionDateError(
@@ -55,7 +72,8 @@ class DashboardSummary:
     total_expense: Money
     total_investment: Money
     total_savings: Money
-    net_balance: Money
+    # A balance, not an amount: negative whenever spending exceeds income.
+    net_balance: SignedMoney
     start_date: date
     end_date: date
 

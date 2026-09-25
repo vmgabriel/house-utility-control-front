@@ -33,9 +33,9 @@
                                 <span class="text-2xl">{{ glyphs.get(tx.type, '&#8593;') | safe }}</span>
                             </div>
                             <div>
-                                <p class="font-semibold text-gray-900">{{ tx.description }}</p>
+                                <p class="font-semibold text-gray-900">{{ tx.description or 'No description' }}</p>
                                 <p class="text-sm text-gray-500">
-                                    {{ tx.type_display }} &bull; {{ tx.date_formatted }}
+                                    {{ tx.type_display }} &bull; {{ tx.category }} &bull; {{ tx.date_formatted }}
                                 </p>
                             </div>
                         </div>
@@ -76,13 +76,17 @@
         type: 'expense',
         amount: '',
         description: '',
+        category: 'General',
         date: '{{ today }}',
         get amountValid() {
             const n = parseFloat(this.amount);
             return this.amount !== '' && !Number.isNaN(n) && n > 0;
         },
         get formValid() {
-            return this.amountValid && this.description.trim().length > 0 && this.date !== '';
+            return this.amountValid
+                && this.description.trim().length > 0
+                && this.category.trim().length > 0
+                && this.date !== '';
         },
     }"
     @open-create-modal.window="open = true"
@@ -134,6 +138,30 @@
                     <p id="amount-error" class="mt-1 text-sm text-red-600"
                        x-show="amount.length > 0 &amp;&amp; !amountValid" x-cloak>
                         Enter an amount greater than 0.
+                    </p>
+                </div>
+
+                <div class="mb-4">
+                    <label for="category" class="block text-sm font-medium text-gray-700 mb-2">Category</label>
+                    <input
+                        type="text"
+                        id="category"
+                        name="category"
+                        x-model="category"
+                        list="category-options"
+                        maxlength="100"
+                        required
+                        aria-describedby="category-hint"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="General"
+                    >
+                    <datalist id="category-options">
+                        {% for suggestion in category_suggestions %}
+                            <option value="{{ suggestion }}"></option>
+                        {% endfor %}
+                    </datalist>
+                    <p id="category-hint" class="mt-1 text-sm text-gray-500">
+                        Required by the API. Pick a suggestion or type your own.
                     </p>
                 </div>
 

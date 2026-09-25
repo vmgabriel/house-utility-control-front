@@ -208,6 +208,13 @@ class DRFAPIClient:
         return body
 
     async def get_dashboard_summaries(self, access_token: str, period: str) -> list:
+        """Fetch summaries for a period.
+
+        The backend wraps results in a list envelope
+        (``DashboardListSerializer``: period, start_date, end_date,
+        summary_count, is_empty, has_stale_data, summaries). A bare list is also
+        accepted so the adapter survives a simpler payload.
+        """
         status, body = await self._request(
             "GET", f"/dashboard/{period}/", access_token=access_token
         )
@@ -217,4 +224,10 @@ class DRFAPIClient:
             raise DRFAPIClientError(
                 f"Failed to get {period} summaries", status_code=status, detail=body
             )
-        return body if isinstance(body, list) else []
+        if isinstance(body, list):
+            return body
+        if isinstance(body, dict):
+            summaries = body.get("summaries")
+            if isinstance(summaries, list):
+                return summaries
+        return []

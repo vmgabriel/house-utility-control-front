@@ -8,6 +8,7 @@ import pytest
 from src.domain.entities import Transaction, User
 from src.domain.exceptions import (
     InvalidTransactionAmountError,
+    InvalidTransactionCategoryError,
     InvalidTransactionDateError,
 )
 from src.domain.value_objects import Money, TransactionType, UserId
@@ -49,6 +50,44 @@ class TestTransaction:
         )
         with pytest.raises(InvalidTransactionDateError):
             transaction.validate(date.today())
+
+    def test_validate_blank_category_raises_error(self):
+        transaction = Transaction(
+            id=None,
+            user_id=UserId("user-123"),
+            type=TransactionType.EXPENSE,
+            amount=Money(Decimal("50.00")),
+            description="Test",
+            date=date.today(),
+            category="   ",
+        )
+        with pytest.raises(InvalidTransactionCategoryError):
+            transaction.validate(date.today())
+
+    def test_category_defaults_to_general(self):
+        transaction = Transaction(
+            id=None,
+            user_id=UserId("user-123"),
+            type=TransactionType.EXPENSE,
+            amount=Money(Decimal("50.00")),
+            description="Test",
+            date=date.today(),
+        )
+        assert transaction.category == "General"
+        transaction.validate(date.today())  # default must be acceptable
+
+    def test_explicit_category_is_kept(self):
+        transaction = Transaction(
+            id=None,
+            user_id=UserId("user-123"),
+            type=TransactionType.EXPENSE,
+            amount=Money(Decimal("50.00")),
+            description="Test",
+            date=date.today(),
+            category="Food",
+        )
+        assert transaction.category == "Food"
+        transaction.validate(date.today())
 
 
 class TestUser:

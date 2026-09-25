@@ -3,13 +3,15 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from src.domain.entities import (
     DashboardOverview,
     DashboardSummary,
     Transaction,
     User,
 )
-from src.domain.value_objects import Money, TransactionType, UserId
+from src.domain.value_objects import Money, SignedMoney, TransactionType, UserId
 from src.interfaces.web.viewmodels import (
     DashboardOverviewViewModel,
     DashboardSummaryViewModel,
@@ -118,6 +120,14 @@ class TestTransactionViewModel:
         assert vm.date == "2026-09-26"
         assert vm.type == "expense"
 
+    def test_category_is_exposed(self):
+        tx = build_transaction(TransactionType.EXPENSE, "10.00")
+        assert TransactionViewModel.from_domain(tx).category == "General"
+
+        tx = build_transaction(TransactionType.EXPENSE, "10.00")
+        tx.category = "Food"
+        assert TransactionViewModel.from_domain(tx).category == "Food"
+
 
 class TestDashboardSummaryViewModel:
     def test_from_domain_formats_net_balance(self):
@@ -127,7 +137,7 @@ class TestDashboardSummaryViewModel:
             total_expense=Money(Decimal("100.00")),
             total_investment=Money(Decimal("0.00")),
             total_savings=Money(Decimal("0.00")),
-            net_balance=Money(Decimal("50.00")),
+            net_balance=SignedMoney(Decimal("50.00")),
             start_date=date(2026, 9, 26),
             end_date=date(2026, 9, 26),
         )
@@ -150,7 +160,7 @@ class TestDashboardSummaryViewModel:
                 total_expense=Money(Decimal("0.00")),
                 total_investment=Money(Decimal("0.00")),
                 total_savings=Money(Decimal("0.00")),
-                net_balance=Money(Decimal("0.00")),
+                net_balance=SignedMoney(Decimal("0.00")),
                 start_date=date(2026, 9, 1),
                 end_date=date(2026, 9, 30),
             )
@@ -159,36 +169,43 @@ class TestDashboardSummaryViewModel:
                 == expected
             )
 
-    def test_negative_net_balance_formatting_branch(self):
-        # `Money` forbids negative amounts, so a negative net balance cannot be
-        # constructed through its constructor. Bypass the invariant to verify the
-        # defensive formatting branch still renders a leading minus sign.
-        negative = Money(Decimal("0.00"))
-        object.__setattr__(negative, "amount", Decimal("-50.00"))
-
+    def test_negative_net_balance_formatting(self):
+        # A balance is legitimately negative, so this is a normal case now rather
+        # than a branch that needs the Money invariant bypassed.
         summary = DashboardSummary(
             period="daily",
             total_income=Money(Decimal("50.00")),
             total_expense=Money(Decimal("100.00")),
             total_investment=Money(Decimal("0.00")),
             total_savings=Money(Decimal("0.00")),
-            net_balance=negative,
+            net_balance=SignedMoney(Decimal("-50.00")),
+            start_date=date(2026, 9, 26),
+            end_date=date(2026, 9, 26),
+        )
+        vm = DashboardSummaryViewModel.from_domain(summary)
+        assert vm.net_balance_formatted == "-$50.00"
+        assert vm.period_display == "Today"
+
+    def test_zero_net_balance_has_no_minus_sign(self):
+        summary = DashboardSummary(
+            period="daily",
+            total_income=Money(Decimal("0.00")),
+            total_expense=Money(Decimal("0.00")),
+            total_investment=Money(Decimal("0.00")),
+            total_savings=Money(Decimal("0.00")),
+            net_balance=SignedMoney(Decimal("0.00")),
             start_date=date(2026, 9, 26),
             end_date=date(2026, 9, 26),
         )
         assert (
             DashboardSummaryViewModel.from_domain(summary).net_balance_formatted
-            == "-$50.00"
+            == "$0.00"
         )
 
-    def test_money_rejects_negative_net_balance_at_the_domain_boundary(self):
-        # Documents the constraint that forces the branch above to be defensive.
-        try:
+    def test_transaction_amounts_stay_non_negative(self):
+        # Money keeps its invariant: only balances may go negative.
+        with pytest.raises(ValueError, match="cannot be negative"):
             Money(Decimal("-0.01"))
-        except ValueError as exc:
-            assert "cannot be negative" in str(exc)
-        else:  # pragma: no cover - would mean the invariant was relaxed
-            raise AssertionError("Money should reject negative amounts")
 
 
 class TestDashboardOverviewViewModel:
@@ -206,7 +223,7 @@ class TestDashboardOverviewViewModel:
             total_expense=Money(Decimal("0.00")),
             total_investment=Money(Decimal("0.00")),
             total_savings=Money(Decimal("0.00")),
-            net_balance=Money(Decimal("10.00")),
+            net_balance=SignedMoney(Decimal("10.00")),
             start_date=date(2026, 9, 21),
             end_date=date(2026, 9, 27),
         )
