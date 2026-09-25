@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from src.domain.value_objects import TransactionType
 
@@ -18,12 +18,18 @@ class DRFTokenResponse(BaseModel):
 class DRFUserResponse(BaseModel):
     """Response from /users/me/ endpoint."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
     id: str
     email: str
-    name: str
+    # The DRF backend exposes the display name as `full_name`
+    # (apps.users.interfaces.serializers.UserSerializer). `name` is accepted as
+    # well so the domain field stays neutral; the backend field wins.
+    name: str = Field(validation_alias=AliasChoices("full_name", "name"))
     plan: str
     is_active: bool = True
+    is_staff: bool = False
+    is_superuser: bool = False
 
 
 class DRFTransactionResponse(BaseModel):

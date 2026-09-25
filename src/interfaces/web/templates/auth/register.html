@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create account - Budget Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-full flex items-center justify-center px-4">
+    <main class="max-w-md w-full bg-white rounded-lg shadow-lg p-8">
+        <h1 class="text-3xl font-bold text-center text-gray-900 mb-8">
+            <span aria-hidden="true">&#128176;</span> Budget Tracker
+        </h1>
+        <h2 class="text-2xl font-semibold text-center text-gray-700 mb-6">Create Account</h2>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div role="alert" aria-live="assertive">
+                    {% for category, message in messages %}
+                        <div class="bg-red-50 text-red-800 border border-red-200 p-3 rounded-lg mb-4">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <!-- Signup is not exposed by the backend yet. -->
+        <div class="mb-6 rounded-lg bg-yellow-50 border border-yellow-200 text-yellow-800 p-4 text-sm">
+            Registration is not available yet. Ask an administrator to create your account.
+        </div>
+
+        <form method="POST" action="{{ url_for('auth.register') }}" novalidate>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="mb-4">
+                <label for="email" class="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                <input type="email" id="email" name="email" required autocomplete="email" disabled
+                       class="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed"
+                       placeholder="you@example.com">
+            </div>
+
+            <div class="mb-6">
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-2">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="new-password" disabled
+                       class="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed"
+                       placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;">
+            </div>
+
+            <button type="submit" disabled
+                    class="w-full bg-gray-400 text-white py-2 px-4 rounded-lg cursor-not-allowed">
+                Sign Up (coming soon)
+            </button>
+        </form>
+
+        <p class="mt-6 text-center text-sm text-gray-600">
+            Already have an account?
+            <a href="{{ url_for('auth.login') }}" class="text-blue-600 hover:text-blue-700 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Sign in</a>
+        </p>
+    </main>
+</body>
+</html>

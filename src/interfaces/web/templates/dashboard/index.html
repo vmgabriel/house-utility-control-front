@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Budget Tracker{% endblock %}
+
+{% block content %}
+{% macro summary_card(summary, fallback_title) %}
+    <section class="bg-white rounded-lg shadow p-6" x-data="{ loaded: false }" x-init="loaded = true">
+        {# Skeleton placeholder for the brief moment between SSR and hydration. #}
+        <template x-if="!loaded">
+            <div class="animate-pulse" aria-hidden="true">
+                <div class="h-6 bg-gray-200 rounded w-1/2 mb-4"></div>
+                <div class="h-10 bg-gray-200 rounded mb-4"></div>
+                <div class="h-4 bg-gray-200 rounded w-3/4"></div>
+            </div>
+        </template>
+        <template x-if="loaded">
+            <div>
+                <h2 class="text-lg font-semibold text-gray-700">{{ summary.period_display if summary else fallback_title }}</h2>
+                <p class="text-3xl font-bold text-gray-900 mt-2">{{ summary.net_balance_formatted if summary else '$0.00' }}</p>
+                <p class="text-sm text-gray-500 mt-2">{{ summary.date_range_display if summary else 'No data' }}</p>
+                <dl class="mt-4 space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <dt class="text-green-600">Income</dt>
+                        <dd class="font-medium text-gray-900">{{ summary.total_income if summary else '$0.00' }}</dd>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <dt class="text-red-600">Expense</dt>
+                        <dd class="font-medium text-gray-900">{{ summary.total_expense if summary else '$0.00' }}</dd>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <dt class="text-yellow-600">Investment</dt>
+                        <dd class="font-medium text-gray-900">{{ summary.total_investment if summary else '$0.00' }}</dd>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <dt class="text-purple-600">Savings</dt>
+                        <dd class="font-medium text-gray-900">{{ summary.total_savings if summary else '$0.00' }}</dd>
+                    </div>
+                </dl>
+            </div>
+        </template>
+    </section>
+{% endmacro %}
+
+<div class="mb-8">
+    <h1 class="text-3xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-gray-600 mt-2">Your financial overview</p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    {{ summary_card(overview.today, 'Today') }}
+    {{ summary_card(overview.this_week, 'This Week') }}
+    {{ summary_card(overview.this_month, 'This Month') }}
+</div>
+
+<div class="mt-8 flex justify-end">
+    <a href="{{ url_for('transactions.index') }}"
+       class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
+        View all transactions
+    </a>
+</div>
+{% endblock %}
