@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "budget-tracker-frontend"
+version = "0.1.0"
+description = "SSR Frontend BFF for Budget Tracker using Flask, Jinja2, and Clean Architecture"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0.0",
+    "jinja2>=3.1.2",
+    "httpx>=0.25.0",
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "itsdangerous>=2.1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "playwright>=1.40.0",
+    "pytest-playwright>=0.4.0",
+    "ruff>=0.1.0",
+    "black>=23.10.0",
+    "respx>=0.20.0",
+]
+
+[tool.hatch.envs.default]
+features = ["dev"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "B", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--strict-markers --tb=short"
