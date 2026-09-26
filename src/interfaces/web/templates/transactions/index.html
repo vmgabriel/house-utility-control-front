@@ -6,6 +6,31 @@
 {% set glyphs = {'income': '&#8595;', 'expense': '&#8593;', 'investment': '&#128200;', 'savings': '&#128054;'} %}
 {% set labels = {'income': 'Income', 'expense': 'Expense', 'investment': 'Investment', 'savings': 'Savings'} %}
 
+{# One Alpine scope spans the header button and the dialog, because Alpine only
+   evaluates directives inside an `x-data` subtree. Scoping `open` to the dialog
+   alone left the "New Transaction" button outside every scope, so its
+   `$dispatch` was never registered and the primary call to action did nothing. #}
+<div
+    x-data="{
+        open: false,
+        type: 'expense',
+        amount: '',
+        description: '',
+        category: 'General',
+        date: '{{ today }}',
+        get amountValid() {
+            const n = parseFloat(this.amount);
+            return this.amount !== '' && !Number.isNaN(n) && n > 0;
+        },
+        get formValid() {
+            return this.amountValid
+                && this.description.trim().length > 0
+                && this.category.trim().length > 0
+                && this.date !== '';
+        },
+    }"
+    @keydown.escape.window="open = false"
+>
 <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8">
     <div>
         <h1 class="text-3xl font-bold text-gray-900">Transactions</h1>
@@ -13,7 +38,7 @@
     </div>
     <button
         type="button"
-        @click="$dispatch('open-create-modal')"
+        @click="open = true"
         aria-haspopup="dialog"
         class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
     >
@@ -68,30 +93,9 @@
     {% endif %}
 </div>
 
-<!-- Create Transaction Modal. `open` lives on <body> so the header button and the
-     dialog share one piece of state. -->
-<div
-    x-data="{
-        open: false,
-        type: 'expense',
-        amount: '',
-        description: '',
-        category: 'General',
-        date: '{{ today }}',
-        get amountValid() {
-            const n = parseFloat(this.amount);
-            return this.amount !== '' && !Number.isNaN(n) && n > 0;
-        },
-        get formValid() {
-            return this.amountValid
-                && this.description.trim().length > 0
-                && this.category.trim().length > 0
-                && this.date !== '';
-        },
-    }"
-    @open-create-modal.window="open = true"
-    @keydown.escape.window="open = false"
->
+<!-- Create Transaction Modal. It reads the same Alpine scope as the header
+     button above, so `open` is a single piece of state for both. -->
+<div>
     <div
         x-show="open"
         x-cloak
@@ -220,5 +224,6 @@
             </form>
         </div>
     </div>
+</div>
 </div>
 {% endblock %}

@@ -123,9 +123,12 @@ async def create():
     try:
         await create_use_case.execute(access_token, transaction)
     except DomainException as exc:
-        # Domain invariants (amount must be positive, no future dates) surface
-        # their own message, which is safe to show the user.
+        # Domain invariants (amount must be positive, no future dates) and DRF
+        # validation errors surface their own message, which is safe to show.
+        # This must return: falling through would also announce success, so a
+        # rejected transaction would be reported as created.
         flash(str(exc), "error")
+        return redirect(url_for("transactions.index"))
     except Exception:
         flash("Failed to create transaction.", "error")
         return redirect(url_for("transactions.index"))
