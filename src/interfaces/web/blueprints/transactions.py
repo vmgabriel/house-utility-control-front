@@ -21,6 +21,7 @@ from src.application.use_cases.transactions import (
 from src.domain.entities import DEFAULT_CATEGORY, Transaction
 from src.domain.exceptions import DomainException
 from src.domain.value_objects import Money, TransactionId, TransactionType, UserId
+from src.infrastructure.api.drf_client import ServiceUnavailableError
 from src.infrastructure.auth.csrf import CSRFTokenManager
 from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
 from src.interfaces.web.viewmodels import TransactionViewModel
@@ -65,6 +66,11 @@ async def index():
         transactions = await fetch_use_case.execute(
             access_token, page=page, page_size=PAGE_SIZE
         )
+    except ServiceUnavailableError:
+        # Backend unreachable: re-raise for the 503 page. An empty list would
+        # render as "No transactions yet", which is a lie -- the user has
+        # transactions, we just cannot see them right now.
+        raise
     except DomainException:
         transactions = []
         flash("Failed to load transactions.", "error")
@@ -122,6 +128,10 @@ async def create():
     create_use_case: CreateTransactionUseCase = current_app.create_transaction_use_case
     try:
         await create_use_case.execute(access_token, transaction)
+    except ServiceUnavailableError:
+        # The write may or may not have landed upstream. Re-raise for the 503
+        # page: a flash on the list page would imply the submission finished.
+        raise
     except DomainException as exc:
         # Domain invariants (amount must be positive, no future dates) and DRF
         # validation errors surface their own message, which is safe to show.
@@ -153,6 +163,10 @@ async def delete(transaction_id: str):
     delete_use_case: DeleteTransactionUseCase = current_app.delete_transaction_use_case
     try:
         await delete_use_case.execute(access_token, TransactionId(transaction_id))
+    except ServiceUnavailableError:
+        # The delete may or may not have landed upstream, so "Transaction
+        # deleted successfully!" would be a guess. Re-raise for the 503 page.
+        raise
     except Exception:
         flash("Failed to delete transaction.", "error")
     else:

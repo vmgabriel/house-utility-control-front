@@ -30,6 +30,19 @@ class ValidationError(DRFAPIClientError):
     """Raised on 400 responses (DRF validation errors)."""
 
 
+class ServiceUnavailableError(DRFAPIClientError):
+    """Raised when the DRF backend never returned a response at all.
+
+    This is deliberately distinct from every other ``DRFAPIClientError``. The
+    rest mean "the backend answered, and the answer was a problem" -- a 500
+    from DRF still carries a status, and the user may just wait and retry. This
+    one means the connection failed, was refused, or timed out, so there is no
+    application state to speak of. The web layer maps it to a 503 page rather
+    than an inline flash, because there is no honest local data to fall back
+    on.
+    """
+
+
 class DRFAPIClient:
     """Async HTTP client wrapper for the DRF backend.
 
@@ -57,24 +70,44 @@ class DRFAPIClient:
         json_data: dict | None = None,
         params: dict | None = None,
     ) -> tuple[int, Any]:
-        """Execute an HTTP request and return (status_code, parsed_json_or_None)."""
+        """Execute an HTTP request and return (status_code, parsed_json_or_None).
+
+        Raises :class:`ServiceUnavailableError` when the request could not be
+        completed at the transport level, so no ``httpx`` exception ever escapes
+        this adapter. That is the boundary's job: callers above it work in terms
+        of statuses, not sockets.
+        """
         url = f"{self.base_url}{path}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=self._build_headers(access_token),
-                json=json_data,
-                params=params,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=self._build_headers(access_token),
+                    json=json_data,
+                    params=params,
+                )
+        except httpx.TransportError as exc:
+            # Covers the whole transport family: ConnectError, every flavour of
+            # TimeoutException, and read/protocol errors. All of them mean the
+            # same thing to this layer -- no response exists. Chained with
+            # `from` so the original traceback survives in the logs.
+            #
+            # Only the method and path are recorded. The URL is deliberately
+            # left out: it is the one field most likely to end up echoed into a
+            # support ticket, and the status code the web layer shows the user
+            # is already the useful part.
+            raise ServiceUnavailableError(
+                f"DRF backend unreachable on {method} {path}: {type(exc).__name__}"
+            ) from exc
 
-            # Handle empty responses (e.g., 204 No Content)
-            try:
-                body = response.json() if response.content else None
-            except ValueError:
-                body = None
+        # Handle empty responses (e.g., 204 No Content)
+        try:
+            body = response.json() if response.content else None
+        except ValueError:
+            body = None
 
-            return response.status_code, body
+        return response.status_code, body
 
     async def login(self, email: str, password: str) -> dict:
         status, body = await self._request(

@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, redirect, render_template, request, ur
 
 from src.application.use_cases.dashboard import GetDashboardOverviewUseCase
 from src.domain.entities import DashboardOverview
+from src.infrastructure.api.drf_client import ServiceUnavailableError
 from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
 from src.interfaces.web.viewmodels import DashboardOverviewViewModel
 
@@ -26,10 +27,17 @@ async def index():
     try:
         overview = await overview_use_case.execute(access_token)
         viewmodel = DashboardOverviewViewModel.from_domain(overview)
+    except ServiceUnavailableError:
+        # Backend unreachable, so re-raise for the 503 page. Falling through to
+        # the empty dashboard below would show "$0.00" across all three cards,
+        # which reads as "you spent nothing" rather than "we could not ask".
+        raise
     except Exception:
         # Graceful degradation: render an empty dashboard rather than a 500.
         # Authentication failures are handled upstream by the auto-refreshing
-        # repository, so anything landing here is a genuine backend problem.
+        # repository, so anything landing here is a genuine backend problem --
+        # a reachable backend that answered with an error. The user can act on
+        # that, so an empty dashboard plus a blank slate is a fair report.
         viewmodel = DashboardOverviewViewModel.from_domain(EMPTY_OVERVIEW)
 
     return render_template("dashboard/index.html", overview=viewmodel)

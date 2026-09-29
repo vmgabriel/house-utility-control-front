@@ -1,0 +1,35 @@
+{#
+    Branded 503 page for when the DRF backend cannot be reached.
+
+    Deliberately standalone rather than extending `base.html`: this page must
+    render with nothing but the request context available. If the outage
+    happened while the session or the CSRF context processor was broken,
+    inheriting the shell would take the error page down with it.
+#}
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Service Unavailable - Budget Tracker</title>
+    {# No Alpine here on purpose: there is no interactivity on an error page, so
+       one less third-party script to fail while the backend is down. #}
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-full flex items-center justify-center">
+    <main class="text-center p-8" role="main">
+        <p class="text-5xl font-bold text-blue-600 mb-4">
+            <span aria-hidden="true">&#128176;</span>
+        </p>
+        <p class="text-6xl font-bold text-gray-300 mb-4" aria-hidden="true">503</p>
+        <h1 class="text-2xl font-semibold text-gray-800 mb-2">Service Temporarily Unavailable</h1>
+        <p class="text-gray-600 mb-6">
+            We are having trouble connecting to our financial data provider.
+            Please try again in a few moments.
+        </p>
+        <a href="/" class="inline-block bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
+            Return to Home
+        </a>
+    </main>
+</body>
+</html>

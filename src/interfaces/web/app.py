@@ -8,8 +8,10 @@ below this module knows that Flask or httpx exist.
 import os
 from datetime import date
 
+import httpx
 from dotenv import load_dotenv
-from flask import Flask, Response, g, redirect, request, url_for
+from flask import Flask, Response, g, redirect, render_template, request, url_for
+from werkzeug.exceptions import ServiceUnavailable
 
 from src.application.use_cases.auth import (
     AuthenticateUserUseCase,
@@ -24,7 +26,7 @@ from src.application.use_cases.transactions import (
     GetTransactionUseCase,
     UpdateTransactionUseCase,
 )
-from src.infrastructure.api.drf_client import DRFAPIClient
+from src.infrastructure.api.drf_client import DRFAPIClient, ServiceUnavailableError
 from src.infrastructure.auth.csrf import CSRFTokenManager
 from src.infrastructure.auth.jwt_cookie_manager import CookieConfig, JWTCookieManager
 from src.infrastructure.repositories.auth_repository import DRFAuthRepository
@@ -36,6 +38,7 @@ from src.infrastructure.repositories.transaction_repository import (
 from src.interfaces.web.blueprints.auth import auth_bp
 from src.interfaces.web.blueprints.dashboard import dashboard_bp
 from src.interfaces.web.blueprints.transactions import transactions_bp
+from src.interfaces.web.security import init_security
 
 load_dotenv()
 
@@ -114,6 +117,12 @@ def create_app() -> Flask:
         dashboard_repository=safe_dashboard_repo
     )
 
+    # Registered first on purpose. Flask runs `after_request` hooks in reverse
+    # registration order, so this one executes last -- after the cookie hook
+    # below has finished rebuilding the response, which is what guarantees no
+    # response can slip out without the headers.
+    init_security(app)
+
     # Every template gets a CSRF token and today's date, so no form can forget
     # the hidden field and the date picker always has a sane default.
     @app.context_processor
@@ -136,6 +145,38 @@ def create_app() -> Flask:
         if refreshed:
             app.cookie_manager.set_tokens(response, *refreshed)
         return response
+
+    # ------------------------------------------------------------------
+    # Graceful degradation when the DRF backend is unreachable
+    # ------------------------------------------------------------------
+    # `ServiceUnavailableError` is the one the DRF client raises for transport
+    # failures. The `httpx` handlers are a belt-and-braces fallback for a call
+    # that escapes the adapter -- through a future code path, say -- and must
+    # never be left to surface as a raw 500.
+    #
+    # There is intentionally no generic 500 handler. A 500 means a bug in *this*
+    # app, and a branded page would hide the traceback that is the only useful
+    # output of one. Only external failures get dressed up.
+
+    def _render_service_unavailable():
+        """Render the branded 503 page. Returns a (body, status) tuple."""
+        return render_template("errors/503.html"), 503
+
+    @app.errorhandler(503)
+    def service_unavailable(error: ServiceUnavailable):
+        # Reached when the app itself aborts with `abort(503)` or a proxy in
+        # front of it forwards a 503, rather than by the DRF call failing.
+        return _render_service_unavailable()
+
+    @app.errorhandler(ServiceUnavailableError)
+    @app.errorhandler(httpx.TimeoutException)
+    @app.errorhandler(httpx.ConnectError)
+    def handle_backend_unreachable(error: Exception):
+        # `error` is deliberately not rendered. It can carry the backend URL and
+        # the failure's own message, and this page is shown to end users; the
+        # detail belongs in the server log, not on screen.
+        app.logger.warning("DRF API unreachable, serving 503: %s", error)
+        return _render_service_unavailable()
 
     # Register blueprints
     app.register_blueprint(auth_bp)

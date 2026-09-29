@@ -162,9 +162,16 @@ class TestCreateTransactionForm:
     def test_transactions_page_renders(self, client):
         authenticate(client)
         response = client.get("/transactions/")
-        # Without a stub the backend is unreachable, which the view degrades
-        # from; the page itself must still render.
-        assert response.status_code == 200
+        # Without a stub the backend is unreachable. The page must NOT still
+        # render here: an empty list would tell the user they have no
+        # transactions, which is a lie about their own finances. The outage
+        # path is a 503 page instead -- see tests/integration/web/
+        # test_error_handling.py. What matters for the form tests below is that
+        # the page renders when the backend does answer.
+        assert response.status_code == 503
+
+        authenticate(client)
+        assert "<form" in get_transactions_page(client)
 
     def test_create_transaction_form_has_all_fields(self, client):
         authenticate(client)

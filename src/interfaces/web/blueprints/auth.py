@@ -16,6 +16,7 @@ from src.application.use_cases.auth import (
     LogoutUserUseCase,
 )
 from src.domain.exceptions import AuthenticationError, DomainException
+from src.infrastructure.api.drf_client import ServiceUnavailableError
 from src.infrastructure.auth.csrf import CSRFTokenManager
 from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
 
@@ -47,6 +48,11 @@ async def login() -> Response:
         except AuthenticationError:
             flash("Invalid email or password. Please try again.", "error")
             return redirect(url_for("auth.login"))
+        except ServiceUnavailableError:
+            # The backend never answered, so there is no verdict to report on the
+            # form. Re-raised for the branded 503 page, which says "try again in
+            # a moment" far better than a vague inline error can.
+            raise
         except DomainException:
             flash("Authentication service unavailable. Please try again.", "error")
             return redirect(url_for("auth.login"))
@@ -80,6 +86,12 @@ async def logout() -> Response:
         except DomainException:
             # A failed remote logout must not trap the user in a stale session;
             # the local cookies are cleared either way.
+            #
+            # This includes ServiceUnavailableError, and that is intentional --
+            # it is the one flow where a 503 would be the *worse* outcome.
+            # Logging out is a purely local action: refusing to drop the session
+            # because the backend is unreachable would leave the user
+            # authenticated against a service that cannot check anything anyway.
             pass
 
     response = redirect(url_for("auth.login"))
