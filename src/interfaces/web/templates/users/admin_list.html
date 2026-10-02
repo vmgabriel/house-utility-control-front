@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}User Management - Budget Tracker{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-3xl font-bold text-gray-900">User Management</h1>
+        <span class="text-sm text-gray-500">Total Users: {{ count }}</span>
+    </div>
+
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Plan</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for user in users %}
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-medium text-gray-900">{{ user.full_name }}</div>
+                        <div class="text-sm text-gray-500">{{ user.email }}</div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <form method="POST" action="{{ url_for('users.admin_update_plan', user_id=user.id) }}" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <select name="plan" onchange="this.form.submit()" class="text-sm border-gray-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-blue-500 py-1">
+                                <option value="free" {% if user.plan_display == 'Free' %}selected{% endif %}>Free</option>
+                                <option value="pro" {% if user.plan_display == 'Pro' %}selected{% endif %}>Pro</option>
+                                <option value="premium" {% if user.plan_display == 'Premium' %}selected{% endif %}>Premium</option>
+                            </select>
+                        </form>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <form method="POST" action="{{ url_for('users.admin_toggle_active', user_id=user.id) }}" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="is_active" value="{{ 'false' if user.is_active else 'true' }}">
+                            <button type="submit" class="px-2 py-1 text-xs font-medium rounded-full {% if user.is_active %}bg-green-100 text-green-800 hover:bg-green-200{% else %}bg-red-100 text-red-800 hover:bg-red-200{% endif %}">
+                                {{ 'Active' if user.is_active else 'Inactive' }}
+                            </button>
+                        </form>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {% if user.is_staff %}
+                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800">Staff</span>
+                        {% else %}
+                            <span class="text-gray-400">User</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <span class="text-gray-400">-</span>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="px-6 py-12 text-center text-gray-500">No users found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

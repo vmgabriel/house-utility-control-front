@@ -23,6 +23,7 @@ class User:
     name: str
     plan: str  # "free", "pro", or "premium"
     is_active: bool = True
+    is_staff: bool = False
 
 
 @dataclass(slots=True)

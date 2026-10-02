@@ -213,6 +213,8 @@ class StubBackend:
         self.requests: list[RecordedRequest] = []
         #: Backend-owned transaction rows; the list endpoint serves these.
         self.transactions: list[dict] = []
+        #: Backend-owned user rows; the /users/ endpoints serve these.
+        self.users: list[dict] = []
         #: Access tokens the stub accepts. Anything else gets a 401.
         self.valid_access_tokens: set[str] = set()
         self.overview: dict = DEFAULT_OVERVIEW
@@ -229,6 +231,7 @@ class StubBackend:
             self._routes.clear()
             self.requests.clear()
             self.transactions = []
+            self.users = []
             self.valid_access_tokens = {DEFAULT_ACCESS_TOKEN, ROTATED_ACCESS_TOKEN}
             self.overview = DEFAULT_OVERVIEW
             self.user = DEFAULT_USER
@@ -252,6 +255,10 @@ class StubBackend:
         """Pre-populate the transaction store the list endpoint serves."""
         with self._lock:
             self.transactions = list(transactions)
+
+    def seed_users(self, *users: dict) -> None:
+        with self._lock:
+            self.users = list(users)
 
     def require_token(self, token: str) -> None:
         """Make ``token`` the only accepted access token."""
@@ -327,6 +334,64 @@ class StubBackend:
     def _profile_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, dict(self.profile))
 
+    def _register_response(self, recorded: RecordedRequest) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        if not payload.get("email") or not payload.get("password"):
+            return StubResponse(400, {"detail": "Email and password required."})
+        user = {
+            "id": "user-new",
+            "email": payload["email"],
+            "full_name": payload.get("full_name", ""),
+            "plan": "free",
+            "is_active": True,
+            "is_staff": False,
+        }
+        self.users.append(user)
+        return StubResponse(201, user)
+
+    def _users_list_response(self, recorded: RecordedRequest) -> StubResponse:
+        page = max(1, int(recorded.query.get("page", 1) or 1))
+        page_size = max(1, int(recorded.query.get("page_size", 20) or 20))
+        start = (page - 1) * page_size
+        return StubResponse(
+            200,
+            {
+                "count": len(self.users),
+                "results": self.users[start : start + page_size],
+            },
+        )
+
+    def _find_user(self, user_id: str) -> dict | None:
+        for row in self.users:
+            if row.get("id") == user_id:
+                return row
+        return None
+
+    def _user_item_response(self, recorded: RecordedRequest) -> StubResponse:
+        user_id = recorded.path.removeprefix("/users/").removesuffix("/")
+        row = self._find_user(user_id)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        if recorded.method in {"PATCH", "PUT"}:
+            payload = recorded.json if isinstance(recorded.json, dict) else {}
+            for key in ("full_name", "is_active"):
+                if key in payload:
+                    row[key] = payload[key]
+            return StubResponse(200, dict(row))
+        if recorded.method == "GET":
+            return StubResponse(200, dict(row))
+        return StubResponse(405, {"detail": "Method not allowed."})
+
+    def _user_plan_response(self, recorded: RecordedRequest) -> StubResponse:
+        user_id = recorded.path.removeprefix("/users/").removesuffix("/plan/")
+        row = self._find_user(user_id)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        if "plan" in payload:
+            row["plan"] = payload["plan"]
+        return StubResponse(200, dict(row))
+
     def _update_profile_response(self, recorded: RecordedRequest) -> StubResponse:
         payload = recorded.json if isinstance(recorded.json, dict) else {}
         for key in ("first_name", "last_name", "timezone", "avatar_url", "bio"):
@@ -350,7 +415,7 @@ class StubBackend:
         self.on("POST", "/users/auth/login/", self._token_response())
         self.on("POST", "/users/auth/refresh/", self._refresh_response())
         self.on("POST", "/users/auth/logout/", StubResponse(204))
-        self.on("GET", "/users/me/", self._me_response())
+        self.on_call("GET", "/users/me/", lambda _r: self._me_response())
         self.on_call("GET", "/transactions/", self._list_response)
         self.on_call("POST", "/transactions/", self._create_response)
         self.on_call("GET", "/dashboard/overview/", self._overview_response)
@@ -359,6 +424,10 @@ class StubBackend:
         self.on_call(
             "PATCH", "/profile/me/preferences/", self._update_preferences_response
         )
+        self.on_call("POST", "/users/auth/register/", self._register_response)
+        self.on_call("GET", "/users/", self._users_list_response)
+        self.on_call("*", "/users/<id>/", self._user_item_response)
+        self.on_call("*", "/users/<id>/plan/", self._user_plan_response)
         # Item routes are per-id, so they are resolved dynamically.
         self.on_call("*", "/transactions/<id>/", self._item_response)
 
@@ -385,7 +454,9 @@ class StubBackend:
     #: Endpoints reachable without an access token. ``/users/auth/logout/`` is
     #: deliberately absent: the real one answers 401 to an anonymous call, and
     #: `DRFAPIClient.logout` tolerates that, so the stub must too.
-    PUBLIC_PATHS = frozenset({"/users/auth/login/", "/users/auth/refresh/"})
+    PUBLIC_PATHS = frozenset(
+        {"/users/auth/login/", "/users/auth/refresh/", "/users/auth/register/"}
+    )
 
     def _unauthorized(self) -> StubResponse:
         return StubResponse(401, {"detail": "Given token not valid."})
@@ -404,6 +475,16 @@ class StubBackend:
             route = self._routes.get((method.upper(), path))
             if route is None and "/transactions/" in path and path.count("/") == 3:
                 route = self._routes.get(("*", "/transactions/<id>/"))
+            if (
+                route is None
+                and path.startswith("/users/")
+                and not path.startswith("/users/auth/")
+                and path.count("/") == 3
+                and path != "/users/me/"
+            ):
+                route = self._routes.get(("*", "/users/<id>/"))
+            if route is None and path.startswith("/users/") and path.count("/") == 4:
+                route = self._routes.get(("*", "/users/<id>/plan/"))
 
             if route is None:
                 return StubResponse(404, {"detail": f"Unstubbed: {method} {path}"})
@@ -434,6 +515,9 @@ class StubDRFServer:
 
     def seed_transactions(self, *transactions: dict) -> None:
         self.backend.seed_transactions(*transactions)
+
+    def seed_users(self, *users: dict) -> None:
+        self.backend.seed_users(*users)
 
     def seed_profile(self, profile: dict) -> None:
         """Replace the profile the stub serves on `/profile/me/`."""

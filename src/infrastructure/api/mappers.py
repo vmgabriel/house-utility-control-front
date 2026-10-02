@@ -31,6 +31,7 @@ def map_user_response(user_data: DRFUserResponse) -> User:
         name=user_data.name,
         plan=user_data.plan,
         is_active=user_data.is_active,
+        is_staff=user_data.is_staff,
     )
 
 

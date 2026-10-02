@@ -8,6 +8,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 
@@ -62,6 +63,10 @@ async def login() -> Response:
         response = redirect(url_for("dashboard.index"))
         cookie_manager.set_tokens(response, access_token, refresh_token)
 
+        # Persist the staff flag so the nav and staff-only routes can read it
+        # without re-fetching /users/me/ on every request.
+        session["is_staff"] = user.is_staff
+
         flash(f"Welcome back, {user.name}!", "success")
         return response
 
@@ -96,6 +101,7 @@ async def logout() -> Response:
 
     response = redirect(url_for("auth.login"))
     cookie_manager.clear_tokens(response)
+    session.pop("is_staff", None)
     flash("You have been logged out.", "info")
     return response
 

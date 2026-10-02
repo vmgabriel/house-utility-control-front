@@ -67,8 +67,8 @@ class TestLoginPage:
     def test_login_page_links_to_registration(self, page: Page):
         page.goto("/auth/login")
         page.get_by_role("link", name="Sign up").click()
-        expect_path(page, "/auth/register")
-        expect(page.locator("h2")).to_have_text("Create Account")
+        expect_path(page, "/users/register")
+        expect(page.locator("h1")).to_have_text("Create Account")
 
 
 class TestRegistration:
@@ -78,6 +78,9 @@ class TestRegistration:
         expect(
             page.get_by_role("button", name="Sign Up (coming soon)")
         ).to_be_disabled()
+
+    # The live registration flow is served by the users bounded context now;
+    # it is covered end to end in tests/e2e/test_users.py.
 
 
 class TestLogin:

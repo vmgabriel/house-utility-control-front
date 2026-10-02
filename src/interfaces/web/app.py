@@ -46,6 +46,14 @@ from src.profile.application.use_cases import (
 )
 from src.profile.infrastructure.repository import DRFProfileRepository
 from src.profile.interfaces.blueprint import profile_bp
+from src.users.application.use_cases import (
+    ListUsersUseCase,
+    RegisterUserUseCase,
+    ToggleUserActiveUseCase,
+    UpdateUserPlanUseCase,
+)
+from src.users.infrastructure.repository import DRFUserRepository
+from src.users.interfaces.blueprint import users_bp
 
 load_dotenv()
 
@@ -71,6 +79,7 @@ def create_app() -> Flask:
     transaction_repo = DRFTransactionRepository(api_client)
     dashboard_repo = DRFDashboardRepository(api_client)
     profile_repo = DRFProfileRepository(api_client)
+    user_repo = DRFUserRepository(api_client)
 
     # Initialize security managers
     cookie_config = CookieConfig(
@@ -101,6 +110,7 @@ def create_app() -> Flask:
     safe_transaction_repo = refreshing(transaction_repo)
     safe_dashboard_repo = refreshing(dashboard_repo)
     safe_profile_repo = refreshing(profile_repo)
+    safe_user_repo = refreshing(user_repo)
 
     app.auth_use_case = AuthenticateUserUseCase(auth_repository=auth_repo)
     app.logout_use_case = LogoutUserUseCase(auth_repository=auth_repo)
@@ -130,6 +140,10 @@ def create_app() -> Flask:
     app.update_preferences_use_case = UpdatePreferencesUseCase(
         repository=safe_profile_repo
     )
+    app.register_user_use_case = RegisterUserUseCase(repository=user_repo)
+    app.list_users_use_case = ListUsersUseCase(repository=safe_user_repo)
+    app.update_user_plan_use_case = UpdateUserPlanUseCase(repository=safe_user_repo)
+    app.toggle_user_active_use_case = ToggleUserActiveUseCase(repository=safe_user_repo)
 
     # Registered first on purpose. Flask runs `after_request` hooks in reverse
     # registration order, so this one executes last -- after the cookie hook
@@ -145,6 +159,12 @@ def create_app() -> Flask:
         token = csrf_manager.generate_token()
         g.csrf_token = token
         return {"csrf_token": token, "today": date.today().isoformat()}
+
+    @app.context_processor
+    def inject_user_context() -> dict:
+        from flask import session
+
+        return {"current_user_is_staff": session.get("is_staff", False)}
 
     @app.after_request
     def apply_security_cookies(response: Response) -> Response:
@@ -197,6 +217,7 @@ def create_app() -> Flask:
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(transactions_bp)
     app.register_blueprint(profile_bp)
+    app.register_blueprint(users_bp)
 
     # Root route
     @app.route("/")
