@@ -27,6 +27,7 @@
                 <div class="hidden sm:flex items-center space-x-4">
                     <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Dashboard</a>
                     <a href="{{ url_for('transactions.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
+                    <a href="{{ url_for('profile.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Settings</a>
                     <form action="{{ url_for('auth.logout') }}" method="POST" class="inline">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit" class="text-gray-700 hover:text-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">

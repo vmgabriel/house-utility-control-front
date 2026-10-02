@@ -144,6 +144,20 @@ DEFAULT_USER: dict = {
     "is_superuser": False,
 }
 
+#: The profile the stubbed `/profile/me/` endpoints serve. Matches the
+#: backend's DRFProfileResponse shape exactly.
+DEFAULT_PROFILE: dict = {
+    "id": "user-123",
+    "first_name": "Test",
+    "last_name": "User",
+    "timezone": "UTC",
+    "language": "es",
+    "currency": "USD",
+    "date_format": "YYYY-MM-DD",
+    "avatar_url": None,
+    "bio": None,
+}
+
 
 def default_transaction(
     transaction_id: str = "tx-1",
@@ -203,6 +217,7 @@ class StubBackend:
         self.valid_access_tokens: set[str] = set()
         self.overview: dict = DEFAULT_OVERVIEW
         self.user: dict = DEFAULT_USER
+        self.profile: dict = dict(DEFAULT_PROFILE)
         self._next_id = 0
         self.reset()
 
@@ -217,6 +232,7 @@ class StubBackend:
             self.valid_access_tokens = {DEFAULT_ACCESS_TOKEN, ROTATED_ACCESS_TOKEN}
             self.overview = DEFAULT_OVERVIEW
             self.user = DEFAULT_USER
+            self.profile = dict(DEFAULT_PROFILE)
             self._next_id = 0
             self._install_defaults()
 
@@ -308,6 +324,27 @@ class StubBackend:
     def _overview_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, dict(self.overview))
 
+    def _profile_response(self, _recorded: RecordedRequest) -> StubResponse:
+        return StubResponse(200, dict(self.profile))
+
+    def _update_profile_response(self, recorded: RecordedRequest) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        for key in ("first_name", "last_name", "timezone", "avatar_url", "bio"):
+            if key in payload:
+                value = payload[key]
+                # The backend treats "" as "clear" for nullable fields.
+                if key in ("avatar_url", "bio") and value == "":
+                    value = None
+                self.profile[key] = value
+        return StubResponse(200, dict(self.profile))
+
+    def _update_preferences_response(self, recorded: RecordedRequest) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        for key in ("language", "currency", "date_format"):
+            if key in payload:
+                self.profile[key] = payload[key]
+        return StubResponse(200, dict(self.profile))
+
     def _install_defaults(self) -> None:
         """Happy-path behaviour, mirroring the real backend's status codes."""
         self.on("POST", "/users/auth/login/", self._token_response())
@@ -317,6 +354,11 @@ class StubBackend:
         self.on_call("GET", "/transactions/", self._list_response)
         self.on_call("POST", "/transactions/", self._create_response)
         self.on_call("GET", "/dashboard/overview/", self._overview_response)
+        self.on_call("GET", "/profile/me/", self._profile_response)
+        self.on_call("PATCH", "/profile/me/", self._update_profile_response)
+        self.on_call(
+            "PATCH", "/profile/me/preferences/", self._update_preferences_response
+        )
         # Item routes are per-id, so they are resolved dynamically.
         self.on_call("*", "/transactions/<id>/", self._item_response)
 
@@ -392,6 +434,12 @@ class StubDRFServer:
 
     def seed_transactions(self, *transactions: dict) -> None:
         self.backend.seed_transactions(*transactions)
+
+    def seed_profile(self, profile: dict) -> None:
+        """Replace the profile the stub serves on `/profile/me/`."""
+        merged = dict(DEFAULT_PROFILE)
+        merged.update(profile)
+        self.backend.profile = merged
 
     def require_token(self, token: str) -> None:
         self.backend.require_token(token)

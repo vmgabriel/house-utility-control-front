@@ -39,6 +39,13 @@ from src.interfaces.web.blueprints.auth import auth_bp
 from src.interfaces.web.blueprints.dashboard import dashboard_bp
 from src.interfaces.web.blueprints.transactions import transactions_bp
 from src.interfaces.web.security import init_security
+from src.profile.application.use_cases import (
+    GetProfileUseCase,
+    UpdatePreferencesUseCase,
+    UpdateProfileUseCase,
+)
+from src.profile.infrastructure.repository import DRFProfileRepository
+from src.profile.interfaces.blueprint import profile_bp
 
 load_dotenv()
 
@@ -63,6 +70,7 @@ def create_app() -> Flask:
     auth_repo = DRFAuthRepository(api_client)
     transaction_repo = DRFTransactionRepository(api_client)
     dashboard_repo = DRFDashboardRepository(api_client)
+    profile_repo = DRFProfileRepository(api_client)
 
     # Initialize security managers
     cookie_config = CookieConfig(
@@ -92,6 +100,7 @@ def create_app() -> Flask:
 
     safe_transaction_repo = refreshing(transaction_repo)
     safe_dashboard_repo = refreshing(dashboard_repo)
+    safe_profile_repo = refreshing(profile_repo)
 
     app.auth_use_case = AuthenticateUserUseCase(auth_repository=auth_repo)
     app.logout_use_case = LogoutUserUseCase(auth_repository=auth_repo)
@@ -115,6 +124,11 @@ def create_app() -> Flask:
     )
     app.overview_use_case = GetDashboardOverviewUseCase(
         dashboard_repository=safe_dashboard_repo
+    )
+    app.get_profile_use_case = GetProfileUseCase(repository=safe_profile_repo)
+    app.update_profile_use_case = UpdateProfileUseCase(repository=safe_profile_repo)
+    app.update_preferences_use_case = UpdatePreferencesUseCase(
+        repository=safe_profile_repo
     )
 
     # Registered first on purpose. Flask runs `after_request` hooks in reverse
@@ -182,6 +196,7 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(transactions_bp)
+    app.register_blueprint(profile_bp)
 
     # Root route
     @app.route("/")

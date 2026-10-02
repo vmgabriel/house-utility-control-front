@@ -35,6 +35,7 @@ __all__ = [
     "mock_drf_login",
     "mock_drf_login_unavailable",
     "mock_drf_logout",
+    "mock_drf_profile_failure",
     "mock_drf_refresh",
     "mock_drf_transaction_create",
     "mock_drf_transaction_delete",
@@ -337,6 +338,15 @@ def mock_drf_dashboard_overview(
         "GET",
         "/dashboard/overview/",
         lambda _r: StubResponse(200, dict(stub.backend.overview)),
+    )
+
+
+def mock_drf_profile_failure(stub: StubDRFServer, status: int = 500) -> None:
+    """Make the profile endpoint fail."""
+    stub.on(
+        "GET",
+        "/profile/me/",
+        StubResponse(status, {"detail": "Profile unavailable."}),
     )
 
 

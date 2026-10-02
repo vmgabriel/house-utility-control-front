@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Profile & Settings - Budget Tracker{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto" x-data="{ activeTab: 'general' }">
+    <h1 class="text-3xl font-bold text-gray-900 mb-6">Account Settings</h1>
+
+    <!-- Tabs -->
+    <div class="border-b border-gray-200 mb-6">
+        <nav class="-mb-px flex space-x-8">
+            <button @click="activeTab = 'general'" :class="{'border-blue-500 text-blue-600': activeTab === 'general', 'border-transparent text-gray-500 hover:text-gray-700': activeTab !== 'general'}" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">General</button>
+            <button @click="activeTab = 'preferences'" :class="{'border-blue-500 text-blue-600': activeTab === 'preferences', 'border-transparent text-gray-500 hover:text-gray-700': activeTab !== 'preferences'}" class="whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm">Preferences</button>
+        </nav>
+    </div>
+
+    <!-- General Tab -->
+    <div x-show="activeTab === 'general'" class="bg-white shadow rounded-lg p-6">
+        <form method="POST" action="{{ url_for('profile.index') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6">
+                <div class="sm:col-span-3">
+                    <label class="block text-sm font-medium text-gray-700">First Name</label>
+                    <input type="text" name="first_name" value="{{ profile.first_name if profile else '' }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                </div>
+                <div class="sm:col-span-3">
+                    <label class="block text-sm font-medium text-gray-700">Last Name</label>
+                    <input type="text" name="last_name" value="{{ profile.last_name if profile else '' }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                </div>
+                <div class="sm:col-span-6">
+                    <label class="block text-sm font-medium text-gray-700">Timezone</label>
+                    <select name="timezone" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                        <option value="UTC" {% if profile and profile.timezone == 'UTC' %}selected{% endif %}>UTC</option>
+                        <option value="America/Bogota" {% if profile and profile.timezone == 'America/Bogota' %}selected{% endif %}>America/Bogota</option>
+                        <option value="America/Mexico_City" {% if profile and profile.timezone == 'America/Mexico_City' %}selected{% endif %}>America/Mexico City</option>
+                        <option value="Europe/Madrid" {% if profile and profile.timezone == 'Europe/Madrid' %}selected{% endif %}>Europe/Madrid</option>
+                    </select>
+                </div>
+                <div class="sm:col-span-6">
+                    <label class="block text-sm font-medium text-gray-700">Avatar URL</label>
+                    <input type="url" name="avatar_url" value="{{ profile.avatar_url if profile and profile.avatar_url else '' }}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="https://example.com/avatar.png">
+                    <p class="mt-2 text-sm text-gray-500">Leave blank to clear.</p>
+                </div>
+                <div class="sm:col-span-6">
+                    <label class="block text-sm font-medium text-gray-700">Bio</label>
+                    <textarea name="bio" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" placeholder="Tell us about yourself (max 500 chars)">{{ profile.bio if profile and profile.bio else '' }}</textarea>
+                    <p class="mt-2 text-sm text-gray-500">Leave blank to clear.</p>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end">
+                <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-blue-600 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Save General</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Preferences Tab -->
+    <div x-show="activeTab === 'preferences'" class="bg-white shadow rounded-lg p-6">
+        <form method="POST" action="{{ url_for('profile.preferences') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6">
+                <div class="sm:col-span-3">
+                    <label class="block text-sm font-medium text-gray-700">Language</label>
+                    <select name="language" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                        <option value="es" {% if profile and profile.language == 'es' %}selected{% endif %}>Español</option>
+                        <option value="en" {% if profile and profile.language == 'en' %}selected{% endif %}>English</option>
+                        <option value="pt" {% if profile and profile.language == 'pt' %}selected{% endif %}>Português</option>
+                    </select>
+                </div>
+                <div class="sm:col-span-3">
+                    <label class="block text-sm font-medium text-gray-700">Currency</label>
+                    <select name="currency" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                        <option value="USD" {% if profile and profile.currency == 'USD' %}selected{% endif %}>USD ($)</option>
+                        <option value="COP" {% if profile and profile.currency == 'COP' %}selected{% endif %}>COP ($)</option>
+                        <option value="EUR" {% if profile and profile.currency == 'EUR' %}selected{% endif %}>EUR (€)</option>
+                    </select>
+                </div>
+                <div class="sm:col-span-6">
+                    <label class="block text-sm font-medium text-gray-700">Date Format</label>
+                    <select name="date_format" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm">
+                        <option value="YYYY-MM-DD" {% if profile and profile.date_format == 'YYYY-MM-DD' %}selected{% endif %}>YYYY-MM-DD (2026-10-03)</option>
+                        <option value="DD/MM/YYYY" {% if profile and profile.date_format == 'DD/MM/YYYY' %}selected{% endif %}>DD/MM/YYYY (03/10/2026)</option>
+                        <option value="MM/DD/YYYY" {% if profile and profile.date_format == 'MM/DD/YYYY' %}selected{% endif %}>MM/DD/YYYY (10/03/2026)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end">
+                <button type="submit" class="inline-flex justify-center rounded-md border border-transparent bg-blue-600 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">Save Preferences</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
