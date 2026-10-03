@@ -130,11 +130,14 @@ async def admin_toggle_active(user_id: str):
         return redirect(url_for("users.admin_list"))
 
     is_active = request.form.get("is_active") == "true"
+    ban_reason = request.form.get("ban_reason", "").strip()
     toggle_uc = current_app.toggle_user_active_use_case
 
     try:
-        await toggle_uc.execute(access_token, user_id, is_active)
-        status = "activated" if is_active else "deactivated"
+        await toggle_uc.execute(
+            access_token, user_id, is_active, ban_reason=ban_reason or None
+        )
+        status = "activated" if is_active else "banned"
         flash(f"User {status} successfully.", "success")
     except ServiceUnavailableError:
         raise

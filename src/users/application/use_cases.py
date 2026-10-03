@@ -42,8 +42,12 @@ class ToggleUserActiveUseCase:
     repository: UserRepositoryPort
 
     async def execute(
-        self, access_token: str, user_id: str, is_active: bool
+        self,
+        access_token: str,
+        user_id: str,
+        is_active: bool,
+        ban_reason: str | None = None,
     ) -> SystemUser:
         return await self.repository.update_user_status(
-            access_token, user_id, is_active
+            access_token, user_id, is_active, ban_reason
         )

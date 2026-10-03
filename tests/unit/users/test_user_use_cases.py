@@ -70,4 +70,14 @@ class TestToggleUserActiveUseCase:
         repo.update_user_status.return_value = USER
         uc = ToggleUserActiveUseCase(repository=repo)
         await uc.execute("token", "user-1", False)
-        repo.update_user_status.assert_called_once_with("token", "user-1", False)
+        repo.update_user_status.assert_called_once_with("token", "user-1", False, None)
+
+    @pytest.mark.asyncio
+    async def test_toggle_forwards_the_ban_reason(self):
+        repo = AsyncMock()
+        repo.update_user_status.return_value = USER
+        uc = ToggleUserActiveUseCase(repository=repo)
+        await uc.execute("token", "user-1", False, ban_reason="spam")
+        repo.update_user_status.assert_called_once_with(
+            "token", "user-1", False, "spam"
+        )

@@ -113,15 +113,17 @@ class TestAdminActions:
         expect(modal).to_be_visible()
         expect(modal).to_contain_text("Ana Ruiz")
 
+        modal.get_by_label("Reason for ban (optional)").fill("Test ban reason")
+
         # Nothing is sent until the confirmation is accepted.
         assert mock_drf.calls("PATCH", "/users/user-1/") == []
 
         modal.get_by_role("button", name="Yes, Ban User").click()
 
-        expect(page.get_by_text("User deactivated successfully.")).to_be_visible()
+        expect(page.get_by_text("User banned successfully.")).to_be_visible()
         calls = mock_drf.calls("PATCH", "/users/user-1/")
         assert len(calls) == 1
-        assert calls[0].json == {"is_active": False}
+        assert calls[0].json == {"is_active": False, "ban_reason": "Test ban reason"}
 
     def test_admin_cannot_ban_self(self, page: Page, mock_drf):
         # The signed-in admin is user-123 (DEFAULT_USER), seeded as their own row.

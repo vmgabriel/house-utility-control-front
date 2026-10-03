@@ -15,7 +15,11 @@ class UserRepositoryPort(Protocol):
     ) -> tuple[int, list[SystemUser]]: ...
 
     async def update_user_status(
-        self, access_token: str, user_id: str, is_active: bool
+        self,
+        access_token: str,
+        user_id: str,
+        is_active: bool,
+        ban_reason: str | None = None,
     ) -> SystemUser: ...
 
     async def update_user_plan(

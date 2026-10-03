@@ -86,6 +86,16 @@ class TestUpdateUserStatus:
         sent = json.loads(route.calls.last.request.content)
         assert sent == {"is_active": False}
 
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_toggle_status_sends_ban_reason_when_given(self, repository):
+        route = respx.patch("http://testserver/api/v1/users/user-1/").mock(
+            return_value=httpx.Response(200, json={**USER_JSON, "is_active": False})
+        )
+        await repository.update_user_status("token", "user-1", False, "spam")
+        sent = json.loads(route.calls.last.request.content)
+        assert sent == {"is_active": False, "ban_reason": "spam"}
+
 
 class TestUpdateUserPlan:
     @pytest.mark.asyncio

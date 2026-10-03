@@ -37,13 +37,21 @@ class DRFUserRepository:
         return data.count, [self._map_to_entity(u) for u in data.results]
 
     async def update_user_status(
-        self, access_token: str, user_id: str, is_active: bool
+        self,
+        access_token: str,
+        user_id: str,
+        is_active: bool,
+        ban_reason: str | None = None,
     ) -> SystemUser:
+        payload: dict = {"is_active": is_active}
+        if ban_reason is not None:
+            payload["ban_reason"] = ban_reason
+
         status, body = await self.api_client._request(
             "PATCH",
             f"/users/{user_id}/",
             access_token=access_token,
-            json_data={"is_active": is_active},
+            json_data=payload,
         )
         if status == 401:
             raise UnauthorizedError("Unauthorized", status_code=401)
