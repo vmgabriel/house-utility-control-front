@@ -63,9 +63,11 @@ async def login() -> Response:
         response = redirect(url_for("dashboard.index"))
         cookie_manager.set_tokens(response, access_token, refresh_token)
 
-        # Persist the staff flag so the nav and staff-only routes can read it
-        # without re-fetching /users/me/ on every request.
+        # Persist the staff flag and user id so the nav, staff-only routes, and
+        # the admin list's self-ban guard can read them without re-fetching
+        # /users/me/ on every request.
         session["is_staff"] = user.is_staff
+        session["user_id"] = user.id
 
         flash(f"Welcome back, {user.name}!", "success")
         return response

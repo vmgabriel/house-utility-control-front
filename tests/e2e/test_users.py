@@ -101,18 +101,58 @@ class TestAdminActions:
         assert len(calls) == 1
         assert calls[0].json == {"plan": "premium"}
 
-    def test_toggle_active_status(self, page: Page, mock_drf):
+    def test_ban_requires_confirmation_modal(self, page: Page, mock_drf):
         mock_drf.seed_users(*_seed_users())
         _login_as_staff(page, mock_drf)
 
         page.goto("/users/admin")
         row = page.locator("tr", has_text="ana@example.com")
-        row.get_by_role("button", name="Active").click()
+        row.get_by_role("button", name="Ban User").click()
+
+        modal = page.get_by_role("dialog")
+        expect(modal).to_be_visible()
+        expect(modal).to_contain_text("Ana Ruiz")
+
+        # Nothing is sent until the confirmation is accepted.
+        assert mock_drf.calls("PATCH", "/users/user-1/") == []
+
+        modal.get_by_role("button", name="Yes, Ban User").click()
 
         expect(page.get_by_text("User deactivated successfully.")).to_be_visible()
         calls = mock_drf.calls("PATCH", "/users/user-1/")
         assert len(calls) == 1
         assert calls[0].json == {"is_active": False}
+
+    def test_admin_cannot_ban_self(self, page: Page, mock_drf):
+        # The signed-in admin is user-123 (DEFAULT_USER), seeded as their own row.
+        mock_drf.seed_users(_staff_user(), *_seed_users())
+        _login_as_staff(page, mock_drf)
+
+        page.goto("/users/admin")
+        row = page.locator("tr", has_text="test@example.com")
+        button = row.get_by_role("button", name="Ban User")
+
+        expect(button).to_be_disabled()
+        expect(button).to_have_attribute("title", "You cannot ban yourself")
+
+    def test_banned_user_is_visually_distinct_and_can_be_unbanned(
+        self, page: Page, mock_drf
+    ):
+        banned_user = {**_seed_users()[0], "is_active": False}
+        mock_drf.seed_users(banned_user, _seed_users()[1])
+        _login_as_staff(page, mock_drf)
+
+        page.goto("/users/admin")
+        row = page.locator("tr", has_text="ana@example.com")
+        expect(row.get_by_text("Banned")).to_be_visible()
+        expect(row.get_by_text("Active", exact=True)).to_have_count(0)
+
+        row.get_by_role("button", name="Unban User").click()
+
+        expect(page.get_by_text("User activated successfully.")).to_be_visible()
+        calls = mock_drf.calls("PATCH", "/users/user-1/")
+        assert len(calls) == 1
+        assert calls[0].json == {"is_active": True}
 
     def test_forged_csrf_token_is_rejected(self, page: Page, mock_drf):
         mock_drf.seed_users(*_seed_users())

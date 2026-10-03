@@ -164,7 +164,13 @@ def create_app() -> Flask:
     def inject_user_context() -> dict:
         from flask import session
 
-        return {"current_user_is_staff": session.get("is_staff", False)}
+        # `current_user_id` lets the admin list disable the ban action on the
+        # signed-in admin's own row. Like `is_staff`, it comes from the session
+        # written at login so every template can read it without a DRF call.
+        return {
+            "current_user_is_staff": session.get("is_staff", False),
+            "current_user_id": session.get("user_id"),
+        }
 
     @app.after_request
     def apply_security_cookies(response: Response) -> Response:
