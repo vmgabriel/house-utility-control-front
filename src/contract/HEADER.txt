@@ -1,0 +1,13 @@
+# GENERATED FILE: DO NOT EDIT MANUALLY.
+#
+# Auto-generated from the DRF OpenAPI schema by `make sync-api-contract`.
+#
+# This is a contract-VERIFICATION artifact used to detect API drift. It is not
+# imported at runtime. drf-spectacular declares several fields required and
+# non-nullable that the live API actually returns as null, so the authoritative
+# runtime types remain the hand-written pydantic schemas in
+# src/infrastructure/api/schemas.py and the per-context equivalents. The
+# divergences are catalogued in src/contract/overrides.py.
+#
+# Run `make sync-api-contract` to regenerate after an intentional API change.
+# Run `make verify-api-contract` to fail CI when the backend has drifted.

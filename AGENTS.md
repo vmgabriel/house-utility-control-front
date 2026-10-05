@@ -17,6 +17,11 @@ src/
 │   ├── http/               # Base DRFAPIClient, AutoRefreshingRepository proxy
 │   └── ui/                 # Base Jinja2 templates, Tailwind/Alpine setup
 │
+├── contract/               # GENERATED view of the DRF API surface (drift detection)
+│   ├── types.py            # GENERATED: do not edit, do not import at runtime
+│   ├── HEADER.txt          # Banner prepended to types.py
+│   └── overrides.py        # Fields where the OpenAPI schema and live API disagree
+│
 ├── budget/                 # BOUNDED CONTEXT: Personal Finance
 │   ├── domain/             # PURE PYTHON: Entities, Value Objects (Money, SignedMoney), Ports
 │   ├── application/        # PURE PYTHON: Use Cases
@@ -45,6 +50,7 @@ src/
 3. **Single Composition Root:** `src/interfaces/web/app.py` is the **only** module allowed to wire dependencies (e.g., injecting `DRFProfileRepository` into `GetProfileUseCase`).
 4. **No Generic 500 Handlers:** A 500 error is a bug. Let it crash and show the traceback. Only catch specific exceptions (like `httpx.ConnectError`) to render the branded `503.html` page.
 5. **Pytest Async Isolation:** NEVER run `tests/e2e` and `tests/unit`/`tests/integration` in the same pytest process. Playwright's sync API holds the event loop, breaking `pytest-asyncio`. Use `make test-all`, which forks two processes.
+6. **Never Import the Generated Contract:** `src.contract.types` MUST NOT be imported by any runtime module. It mirrors the OpenAPI schema, which is wrong about nullability in several places (see [API Contract Management](#-api-contract-management)); the hand-written pydantic schemas are authoritative. `types.py` exists only so `make verify-api-contract` can diff it.
 
 ---
 
@@ -61,12 +67,69 @@ make test       # Unit + Integration tests (fast, respx mocked)
 make test-e2e   # Playwright E2E tests (headless, real HTTP stub)
 make test-e2e-headed # E2E with visible browser
 make test-all   # Runs unit/integration AND e2e in separate processes
+
+make sync-api-contract   # Regenerate src/contract/types.py from the DRF schema
+make verify-api-contract # Fail if the backend's API has drifted from that file
 ```
 
 **Focused Testing:**
 ```bash
 hatch run pytest tests/integration/profile/test_repository.py -v
 ```
+
+---
+
+## 🔌 API Contract Management
+
+`src/contract/` holds the machine-generated view of the DRF API surface.
+
+| File | Ownership | Purpose |
+| --- | --- | --- |
+| `types.py` | **GENERATED** | Dataclasses derived from the DRF OpenAPI schema |
+| `HEADER.txt` | manual | The banner prepended to `types.py`; edit this, not the output |
+| `overrides.py` | manual | Fields where the schema and the live API disagree |
+
+### `types.py` is a drift-detection artifact, NOT a runtime type source
+
+**Do not import `src.contract.types` from application, domain, or infrastructure
+code.** The mappers keep using the hand-written pydantic schemas
+(`src/infrastructure/api/schemas.py` and the per-context equivalents), because
+drf-spectacular declares several fields required and non-nullable that the live
+API actually returns as `null`:
+
+| Field | Generated type | Actual API behaviour |
+| --- | --- | --- |
+| `DashboardOverview.today` / `this_week` / `this_month` | `DashboardSummary` | `null` when the user has no transactions in the window |
+| `Profile.avatar_url` / `Profile.bio` | `str` | `null` until the user sets them |
+
+Consuming the generated types would raise on a freshly registered user — an
+`AttributeError` inside the dashboard mapper, surfacing as a 500. Every such
+divergence must be catalogued in `overrides.py`, and
+`tests/integration/test_contract_overrides.py` fails if a runtime schema is
+tightened to match the generated contract, or if the backend later fixes the
+schema (in which case the override should be deleted, not left stale).
+
+### Workflow
+
+```bash
+make sync-api-contract                 # regenerate + ruff + black, then commit
+make verify-api-contract               # what CI runs; non-zero on drift
+make verify-api-contract SCHEMA_URL=…  # against a non-local backend
+```
+
+`sync` and `verify` share `CODEGEN_FLAGS` in the `Makefile` on purpose. The
+verify target regenerates into `build/types_check.py` using identical flags and
+diffs it against the committed file, so changing the generator's options in one
+target but not the other would otherwise report drift on every run.
+
+The schema endpoint serves **YAML** by default (`Content-Type:
+application/vnd.oai.openapi`); the targets pass `Accept: application/json` and
+validate the result parses as JSON before generating.
+
+### Adding a new field the backend already returns
+
+Do **not** regenerate-and-hope. Add it to the hand-written pydantic schema and
+the mapper first, then run `make sync-api-contract` so the contract catches up.
 
 ---
 
@@ -100,6 +163,16 @@ except DomainException as e:
 except Exception:
     flash("An unexpected error occurred.", "error")
 ```
+
+### 5. Alpine.js Scope Strictness
+- **CRITICAL:** All interactive elements (buttons, modals, forms with `x-model`, `@click`, `$dispatch`) MUST be strictly enclosed within a single, top-level `x-data="..."` scope in the Jinja2 template.
+- **NEVER** place action buttons outside the `x-data` subtree. If a button needs to open a modal, both the button and the modal must share the same parent `x-data` container.
+- If a page requires multiple independent interactive zones, explicitly define separate `x-data` blocks for each, but do not mix their state.
+- *Rationale:* Alpine.js silently ignores directives outside of an `x-data` scope, leading to dead UI elements (e.g., buttons that do nothing).
+
+### 6. Direct Uploads (Nextcloud)
+- Large files (documents, contracts) must NEVER be routed through the Flask BFF.
+- Always use the Nextcloud Direct Upload API flow: BFF fetches token -> Frontend uploads directly to Nextcloud -> Frontend sends file path to BFF for DB registration.
 
 ---
 

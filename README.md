@@ -95,6 +95,26 @@ Two deliberate exceptions:
 - **Logout always succeeds locally.** Refusing to clear the session because the backend is unreachable would leave the user authenticated against a service that cannot validate anything. The cookies are dropped either way.
 - **There is no generic `500` handler.** A `500` means a bug in *this* app, and a branded page would hide the traceback that is the only useful output of one. Only external failures get dressed up.
 
+## 🧩 Frontend Rules
+
+Two rules govern every Jinja2 template and file-upload feature.
+
+### Alpine.js Scope Strictness
+
+All interactive elements — buttons, modals, forms with `x-model`, `@click`, `$dispatch` — must live inside a single, top-level `x-data="..."` scope. A button that opens a modal and that modal must share the same `x-data` parent; action buttons are never placed outside the subtree. Pages that need several independent interactive zones declare separate `x-data` blocks and keep their state apart.
+
+Alpine.js silently ignores directives outside an `x-data` scope, so a misplaced button renders fine and does nothing. No build step, no lint rule, and no unit test catches that — the E2E suite does, by clicking it.
+
+### Direct Uploads (Nextcloud)
+
+Large files (documents, contracts) never travel through the Flask BFF. Use the Nextcloud Direct Upload API flow instead:
+
+1. BFF fetches the upload token.
+2. Frontend uploads the file directly to Nextcloud.
+3. Frontend sends the resulting file path to the BFF for DB registration.
+
+Proxying file bytes through the BFF would tie upload capacity and timeouts to the same process that renders every page.
+
 ## 📁 Project Structure
 
 ```text

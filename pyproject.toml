@@ -30,6 +30,10 @@ dev = [
     "ruff>=0.1.0",
     "black>=23.10.0",
     "respx>=0.20.0",
+    # `make sync-api-contract` turns the DRF OpenAPI schema into dataclasses.
+    # Dev-only: nothing under src/ imports the output at runtime yet, and the
+    # tool itself has no business in the production image.
+    "datamodel-code-generator>=0.25.0",
 ]
 
 [tool.hatch.envs.default]
@@ -54,6 +58,10 @@ select = ["E", "F", "I", "N", "W", "B", "UP"]
 "src/domain/value_objects.py" = ["UP042"]
 # `UserPlan(str, Enum)` matches the same serialisation approach as UserPlan.
 "src/users/domain/entities.py" = ["UP042"]
+# The rentals enums (UtilityType, DocumentType, PaymentStatus) follow the same
+# `(str, Enum)` approach so the infrastructure layer can serialise them straight
+# to the DRF JSON API, mirroring the backend's own StrEnum members.
+"src/rentals/domain/value_objects.py" = ["UP042"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
