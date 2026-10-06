@@ -60,7 +60,22 @@ services:
       - NEXTCLOUD_DAV_PATH=${NEXTCLOUD_DAV_PATH:-}
       - NEXTCLOUD_BASIC_AUTH=${NEXTCLOUD_BASIC_AUTH:-}
     volumes:
-      - ./src:/app/src:ro
+      # Both trees are mounted so `make test` runs the working copy rather than
+      # whatever `COPY` baked in at image build time. Without the tests mount,
+      # editing a test on the host and running `make test` would silently
+      # execute the stale copy from the image -- the worst possible failure
+      # mode, because the suite goes green on code that no longer exists.
+      #
+      # Read-write, not read-only: `make format` runs black inside the container
+      # and has to write the result back to the host. A read-only mount makes
+      # that target fail outright. The container only ever writes through these
+      # two paths, by design.
+      - ./src:/app/src
+      - ./tests:/app/tests
+      # pyproject.toml is mounted too: ruff and black read their line-length
+      # and target-version from it, and a stale copy would lint against
+      # settings the developer has since changed.
+      - ./pyproject.toml:/app/pyproject.toml:ro
     # Joins the DRF backend's compose network so `web` resolves by service name.
     # This is what makes the API reachable WITHOUT publishing it on the host --
     # see the note above `DRF_API_BASE_URL`.

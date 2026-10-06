@@ -264,6 +264,48 @@ class TestLogout:
             expect_path(page, "/auth/login")
 
 
+class TestNavStructure:
+    """The nav's link set, which developer feedback keeps changing.
+
+    Asserted rather than left to review because the failure mode is a duplicate
+    or a mislabelled link -- both of which render perfectly and mislead.
+
+    Nothing here measures pixels. The page pulls Tailwind from a CDN, and the
+    E2E browser has no route to it, so the whole page renders unstyled:
+    ``window.tailwind`` is undefined and the body falls back to Times New Roman.
+    Any geometric assertion would therefore measure unstyled flow layout and
+    pass or fail for reasons that have nothing to do with the CSS under review.
+    Visual alignment is asserted on the class contract in
+    ``tests/integration/web/test_navigation.py`` instead.
+    """
+
+    def test_financial_section_has_exactly_one_nav_link(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        nav = page.locator("nav")
+        # Labelled "Transactions" but points at the overview. One link, not two:
+        # a second one aimed at the transaction list was removed as redundant.
+        financial = nav.get_by_role("link", name="Transactions")
+        expect(financial).to_have_count(1)
+        expect(financial).to_have_attribute("href", "/dashboard/")
+        # The removed link's label must not survive anywhere in the nav.
+        expect(nav.get_by_role("link", name="Dashboard")).to_have_count(0)
+
+    def test_nav_links_are_grouped_not_spread(self, page: Page, authed: Page, mock_drf):
+        # `justify-between` spreads free space between *every* child, so three
+        # direct children would push the links apart from each other and from the
+        # account menu. Asserted on the DOM shape, not on pixels -- see the note
+        # on why pixel assertions are not usable in this suite.
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        row = page.locator("nav > div > div").first
+        expect(row.locator(":scope > div")).to_have_count(2)
+
+
 class TestAccountMenu:
     """The nav's avatar dropdown.
 

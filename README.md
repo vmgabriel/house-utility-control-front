@@ -23,38 +23,50 @@ Two adapter details worth knowing before reading the code:
 - **Core**: Python 3.11+, Flask, Jinja2
 - **Frontend**: Tailwind CSS (CDN), Alpine.js (lightweight reactivity)
 - **HTTP**: `httpx` (async), `pydantic` (data validation)
-- **Tooling**: Hatch (project management), Makefile, Ruff, Black, Pytest, Playwright
+- **Tooling**: Docker Compose (every target runs in the container), Hatch, Ruff, Black, Pytest, Playwright
 
 ## 🛠 Setup & Development
 
-1. **Prerequisites**: Python 3.11+, Hatch
-2. **Install dependencies**:
-   ```bash
-   make setup
-   ```
-   *(Note: If `playwright install-deps` fails due to sudo restrictions, ensure Chromium is already installed on your system).*
-3. **Configure environment**:
+Every target runs inside the `bff` container. Your host Python is never involved, so the suite cannot pass locally on a version the image does not have. `hatch` still does the work inside; only the entrypoint moved.
+
+1. **Prerequisites**: Docker Engine with Docker Compose v2
+2. **Configure environment**:
    ```bash
    cp .env.example .env
    # Edit .env with your DRF_API_BASE_URL and FLASK_SECRET_KEY
    ```
-4. **Run the development server**:
+3. **Build and start**:
    ```bash
-   make run
+   make setup    # Build the image (includes Playwright's Chromium)
+   make run      # Start the BFF (http://localhost:5001)
    ```
-   The app will be available at `http://localhost:5000`.
+4. **View logs**: `make logs`
+5. **Stop services**: `make stop`
+
+Two ports, and the difference matters. The BFF publishes **5001**. Port **5000** belongs to the `caddy` reverse proxy, which sits behind the `proxy` profile and is off by default — reach it with `docker compose --profile proxy up -d`.
+
+> If `make run` fails with `Bind for 0.0.0.0:5001 failed: port is already allocated`, another Compose project already publishes 5001. Find it with `docker ps --format "{{.Names}}\t{{.Ports}}" | grep 5001` and stop it, or change the host side of the `bff` mapping in `docker-compose.yml` (`"5002:5001"` publishes elsewhere and changes nothing inside the container).
+
+`src/` and `tests/` are bind-mounted read-only, so edits on the host are picked up without a rebuild. `make setup` is only needed after changing `pyproject.toml` or the `Dockerfile`.
+
+`make run` needs the DRF backend's Compose network to exist, because `bff` joins it rather than publishing the API on a host interface:
+
+```bash
+docker compose -p budget-tracker up -d    # in the DRF project
+```
+
+Without it, `docker compose up` fails immediately with a clear error, which is better than starting a BFF that cannot reach its backend.
 
 `FLASK_DEBUG=true` relaxes two things for local work: the JWT cookies drop `Secure` (there is no HTTPS on `localhost`), and Flask's debug reloader comes up. Both must be off in production — a `Secure` flag ignored over plain HTTP is the difference between a protected token and a leaked one.
 
 ## 🧪 Testing
 
-The project includes comprehensive testing at all levels:
-
 ```bash
-make lint       # Run Ruff and Black
-make test       # Run unit and integration tests
-make test-e2e   # Run Playwright E2E tests (headless)
-make test-all   # Run all test suites
+make lint       # Ruff and Black, in the container
+make test       # Unit + integration (fast, DRF faked with respx)
+make test-e2e   # Playwright E2E (headless, real browser)
+make test-all   # Everything, as two pytest processes
+make shell      # A shell inside the running BFF
 ```
 
 Current state: **~230+ unit/integration**, **~100+ end-to-end**.
@@ -65,8 +77,9 @@ Current state: **~230+ unit/integration**, **~100+ end-to-end**.
 | `tests/integration` | The real WSGI stack (including `async def` views) plus `respx` for DRF, covering auth flows, CSRF, method strictness, security headers, and the outage path. |
 | `tests/e2e` | A real browser against a real Flask server on a real socket, with a fake DRF backend. |
 
-Two things to know before adding tests:
+Three things to know before adding tests:
 
+- **`tests/` is bind-mounted, and that is load-bearing.** If the mount is ever dropped, `make test` silently runs the copy baked into the image at build time — green on code you have already changed. `make setup` after editing `Dockerfile` or `pyproject.toml`, but never because of a source edit.
 - **The E2E and async suites cannot share a `pytest` process.** Playwright's sync API holds the event loop for the whole session, which breaks `pytest-asyncio`'s auto mode. `make test-all` runs them as two processes on purpose; `tests/e2e/conftest.py` explains why and fails loudly if you try to collect both.
 - **DRF is faked over HTTP, not intercepted in the browser.** The BFF is server-side rendered, so `page.route()` would mock nothing while the suite appeared to pass. The only honest seam is the network boundary, so `tests/e2e/drf_stub.py` runs a real server on a real port.
 

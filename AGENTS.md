@@ -67,22 +67,27 @@ src/
 
 ## 🛠 Development Workflow & Commands
 
-All tooling runs inside the Hatch environment. Use `make`, or prefix with `hatch run`.
+All tooling runs inside the `bff` Docker container. Use `make`; do not invoke `hatch` on the host, which is a different environment from the one CI and the image use.
 
 ```bash
-make setup      # Install deps + playwright browsers
-make run        # Start dev server (http://localhost:5000)
+make setup      # Build the image (installs deps + Playwright's Chromium)
+make run        # Start the BFF (http://localhost:5001)
+make stop       # Stop, keeping volumes and the built image
+make logs       # Follow logs
 make lint       # ruff check + black --check
 make format     # black + ruff --fix
 make test       # Unit + Integration tests (fast, respx mocked)
 make test-e2e   # Playwright E2E tests (headless, real HTTP stub)
 make test-e2e-headed # E2E with visible browser
 make test-all   # Runs unit/integration AND e2e in separate processes
+make shell      # Shell inside the running BFF
 ```
+
+`src/` and `tests/` are bind-mounted read-only, so source edits need no rebuild. `make setup` is only required after changing `Dockerfile` or `pyproject.toml`.
 
 **Focused Testing:**
 ```bash
-hatch run pytest tests/integration/profile/test_repository.py -v
+docker compose run --rm bff hatch run pytest tests/integration/profile/test_repository.py -v
 ```
 
 ---

@@ -113,17 +113,29 @@ class TestAppHasNoCredentials:
             assert key not in app.config
 
     def test_env_example_ships_no_credential(self):
-        text = Path(".env.example").read_text()
+        text = _env_example().read_text()
         assert "NEXTCLOUD_UPLOAD_PATH" in text
         for line in text.splitlines():
             if line.startswith(("NEXTCLOUD_USERNAME=", "NEXTCLOUD_PASSWORD=")):
                 raise AssertionError(f"credential setting present: {line}")
 
     def test_env_example_documents_the_proxy(self):
-        text = Path(".env.example").read_text()
+        text = _env_example().read_text()
         assert "handle_path /nextcloud-dav" in text
         assert "header_up Authorization" in text
         assert "reverse_proxy" in text
+
+
+def _env_example() -> Path:
+    """Locate ``.env.example`` from the repo root, not from the CWD.
+
+    ``Path(".env.example")`` resolved relative to wherever pytest happened to be
+    invoked. That was fine when the suite only ever ran from the project root on
+    the host, and stopped being true under ``docker compose run``, where the file
+    is not in the image at all. Anchored to the repository root so the assertion
+    holds regardless of launcher.
+    """
+    return Path(__file__).resolve().parents[3] / ".env.example"
 
 
 def _hub_html(respx_mock, authed_client) -> str:
