@@ -32,8 +32,9 @@ Four contract details drive the implementation. All were confirmed against
    with a reading written under a different tariff. Fresh *intent* is where the
    domain derives values -- see ``UtilityReading.create``.
 
-See also ``src/contract/overrides.py`` for the documented divergences between
-the OpenAPI schema and the live API.
+The hand-written pydantic schemas are authoritative over the DRF OpenAPI
+schema, which declares several fields required and non-nullable that the live
+API returns as ``null``. See AGENTS.md rule 7.
 """
 
 from __future__ import annotations

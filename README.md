@@ -1,6 +1,6 @@
-# Budget Tracker Frontend (BFF)
+# House Utility Control Frontend (BFF)
 
-A secure, Server-Side Rendered (SSR) Backend-for-Frontend (BFF) for the Budget Tracker application. Built with Python, Flask, Jinja2, Tailwind CSS, and Alpine.js, following Domain-Driven Design (DDD) and Clean Architecture principles.
+A secure, Server-Side Rendered (SSR) Backend-for-Frontend (BFF) for House Utility & Budget Control. Built with Python, Flask, Jinja2, Tailwind CSS, and Alpine.js, following Domain-Driven Design (DDD) and Clean Architecture principles.
 
 ## 🏗 Architecture
 
@@ -57,7 +57,7 @@ make test-e2e   # Run Playwright E2E tests (headless)
 make test-all   # Run all test suites
 ```
 
-Current state: **24 unit**, **186 integration**, **88 end-to-end**.
+Current state: **~230+ unit/integration**, **~100+ end-to-end**.
 
 | Suite | What it proves |
 | --- | --- |
@@ -119,14 +119,20 @@ Proxying file bytes through the BFF would tie upload capacity and timeouts to th
 
 ```text
 src/
-├── domain/                 # Pure business logic: entities, value objects, ports
-├── application/            # Use cases and ports
-├── infrastructure/         # DRF API client, mappers, cookie/CSRF managers
-└── interfaces/             # Flask app, blueprints, Jinja2 templates, ViewModels
+├── shared/                 # SHARED KERNEL: auth, http client, base UI templates
+├── budget/                 # BOUNDED CONTEXT: Transactions & Dashboard
+├── profile/                # BOUNDED CONTEXT: User Preferences
+├── users/                  # BOUNDED CONTEXT: Identity, Registration, Staff Admin
+├── rentals/                # BOUNDED CONTEXT: Properties, Bills, Payments (if applicable)
+└── interfaces/             # COMPOSITION ROOT: app.py, security.py, error templates
 tests/
-├── unit/                   # Domain and application tests
+├── unit/                   # Pure domain and application tests
 ├── integration/            # Infrastructure and web component tests
-└── e2e/                    # Playwright end-to-end tests (with DRF stub)
+└── e2e/                    # Playwright end-to-end tests
 ```
 
 Inside `interfaces/web/`, `app.py` is the composition root, `security.py` holds the response-header policy, and `templates/errors/503.html` is the outage page. It deliberately does not extend `base.html`: the error page must render with nothing but the request context available, so it cannot depend on the session, the flash queue, or the CSRF context processor — any of which might be what broke.
+
+## ℹ️ About
+
+House Utility & Budget Control Frontend.

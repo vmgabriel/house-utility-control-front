@@ -8,9 +8,7 @@ the adapter's URL construction, status handling, and payload shapes together.
 
 The rentals endpoints are not reachable on the running DRF server yet (it
 predates the rentals app), so every response body here is hand-built from the
-backend's serializers and models. `tests/integration/rentals/test_rentals_contract.py`
-cross-checks the field names against the generated contract as soon as that
-server is restarted.
+backend's serializers and models.
 """
 
 from __future__ import annotations

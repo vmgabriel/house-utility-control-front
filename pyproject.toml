@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "budget-tracker-frontend"
+name = "house-utility-control-front"
 version = "0.1.0"
-description = "SSR Frontend BFF for Budget Tracker using Flask, Jinja2, and Clean Architecture"
+description = "SSR Frontend BFF for House Utility & Budget Control using Flask, Jinja2, and Clean Architecture"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -30,10 +30,6 @@ dev = [
     "ruff>=0.1.0",
     "black>=23.10.0",
     "respx>=0.20.0",
-    # `make sync-api-contract` turns the DRF OpenAPI schema into dataclasses.
-    # Dev-only: nothing under src/ imports the output at runtime yet, and the
-    # tool itself has no business in the production image.
-    "datamodel-code-generator>=0.25.0",
 ]
 
 [tool.hatch.envs.default]
