@@ -24,13 +24,13 @@ import os
 import httpx
 import pytest
 
-from src.infrastructure.auth.csrf import CSRF_HEADER
 from src.rentals.domain.exceptions import NextcloudUploadError
 from src.rentals.infrastructure.nextcloud_webdav import (
     NextcloudWebDavClient,
     build_client,
 )
 from src.rentals.interfaces.web.upload_proxy import FILE_FIELD
+from src.shared.auth.csrf import CSRF_HEADER
 from tests.integration.rentals.conftest import (
     ACCESS_TOKEN,
     APARTMENT_ID,
@@ -91,7 +91,7 @@ def nextcloud_mock():
 
 
 def _authed(application):
-    from src.infrastructure.auth.jwt_cookie_manager import (
+    from src.shared.auth.jwt_cookie_manager import (
         ACCESS_COOKIE,
         REFRESH_COOKIE,
     )

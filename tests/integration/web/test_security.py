@@ -14,10 +14,10 @@ import httpx
 import pytest
 import respx
 
-from src.infrastructure.auth.csrf import CSRF_COOKIE
-from src.infrastructure.auth.jwt_cookie_manager import ACCESS_COOKIE, REFRESH_COOKIE
 from src.interfaces.web.app import create_app
 from src.interfaces.web.security import SECURITY_HEADERS
+from src.shared.auth.csrf import CSRF_COOKIE
+from src.shared.auth.jwt_cookie_manager import ACCESS_COOKIE, REFRESH_COOKIE
 
 BASE = "http://api.test/api/v1"
 
@@ -91,7 +91,7 @@ class TestTokenLeakage:
         whether the test env happens to be running with debug on."""
         from flask import Response
 
-        from src.infrastructure.auth.jwt_cookie_manager import (
+        from src.shared.auth.jwt_cookie_manager import (
             CookieConfig,
             JWTCookieManager,
         )

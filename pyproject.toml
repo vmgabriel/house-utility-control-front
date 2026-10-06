@@ -46,12 +46,12 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W", "B", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
-# The domain exception hierarchy is rooted at `DomainException` on purpose, so
-# it stays importable as-is; every concrete error already uses the `Error` suffix.
-"src/domain/exceptions.py" = ["N818"]
+# The exception hierarchy is rooted at `DomainException` on purpose, so it stays
+# importable as-is; every concrete error already uses the `Error` suffix.
+"src/shared/domain/exceptions.py" = ["N818"]
 # `TransactionType(str, Enum)` is kept instead of `StrEnum` because the
 # infrastructure layer serialises these members straight to the DRF JSON API.
-"src/domain/value_objects.py" = ["UP042"]
+"src/budget/domain/value_objects.py" = ["UP042"]
 # `UserPlan(str, Enum)` matches the same serialisation approach as UserPlan.
 "src/users/domain/entities.py" = ["UP042"]
 # The rentals enums (UtilityType, DocumentType, PaymentStatus) follow the same

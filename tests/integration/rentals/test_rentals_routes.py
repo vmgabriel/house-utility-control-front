@@ -692,7 +692,7 @@ class TestNoFileUploadPathExists:
         helper actually lives -- the rentals adapter only delegates to it. Both
         are asserted so neither can grow a side channel.
         """
-        shared = _code_only(Path("src/infrastructure/api/drf_client.py"))
+        shared = _code_only(Path("src/shared/http/drf_client.py"))
         assert "files=" not in shared
         assert "multipart" not in shared
         # The single request helper forwards JSON and query params only.

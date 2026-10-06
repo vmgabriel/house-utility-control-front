@@ -15,31 +15,26 @@ from flask import Flask, Response, g, redirect, render_template, request, url_fo
 from jinja2 import FileSystemLoader
 from werkzeug.exceptions import ServiceUnavailable
 
-from src.application.use_cases.auth import (
+from src.budget.application.use_cases import (
+    CreateTransactionUseCase,
+    DeleteTransactionUseCase,
+    FetchTransactionsUseCase,
+    GetDashboardOverviewUseCase,
+    GetTransactionUseCase,
+    UpdateTransactionUseCase,
+)
+from src.budget.infrastructure.repositories import (
+    DRFDashboardRepository,
+    DRFTransactionRepository,
+)
+from src.budget.interfaces.blueprints import dashboard_bp, transactions_bp
+from src.identity.application.use_cases import (
     AuthenticateUserUseCase,
     LogoutUserUseCase,
     RefreshTokenUseCase,
 )
-from src.application.use_cases.dashboard import GetDashboardOverviewUseCase
-from src.application.use_cases.transactions import (
-    CreateTransactionUseCase,
-    DeleteTransactionUseCase,
-    FetchTransactionsUseCase,
-    GetTransactionUseCase,
-    UpdateTransactionUseCase,
-)
-from src.infrastructure.api.drf_client import DRFAPIClient, ServiceUnavailableError
-from src.infrastructure.auth.csrf import CSRFTokenManager
-from src.infrastructure.auth.jwt_cookie_manager import CookieConfig, JWTCookieManager
-from src.infrastructure.repositories.auth_repository import DRFAuthRepository
-from src.infrastructure.repositories.auto_refresh import AutoRefreshingRepository
-from src.infrastructure.repositories.dashboard_repository import DRFDashboardRepository
-from src.infrastructure.repositories.transaction_repository import (
-    DRFTransactionRepository,
-)
-from src.interfaces.web.blueprints.auth import auth_bp
-from src.interfaces.web.blueprints.dashboard import dashboard_bp
-from src.interfaces.web.blueprints.transactions import transactions_bp
+from src.identity.infrastructure.repository import DRFAuthRepository
+from src.identity.interfaces.blueprint import auth_bp
 from src.interfaces.web.security import init_security
 from src.profile.application.use_cases import (
     GetProfileUseCase,
@@ -58,6 +53,10 @@ from src.rentals.infrastructure.nextcloud_webdav import (
 )
 from src.rentals.interfaces.web.routes import rentals_bp
 from src.rentals.interfaces.web.upload_proxy import build_upload_proxy_blueprint
+from src.shared.auth.csrf import CSRFTokenManager
+from src.shared.auth.jwt_cookie_manager import CookieConfig, JWTCookieManager
+from src.shared.http.auto_refresh import AutoRefreshingRepository
+from src.shared.http.drf_client import DRFAPIClient, ServiceUnavailableError
 from src.shared.infrastructure.clock import SystemClock
 from src.users.application.use_cases import (
     ListUsersUseCase,
@@ -77,22 +76,24 @@ TRUTHY_VALUES = ("true", "1", "yes", "on")
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates")
-    # The rentals context keeps its Jinja2 templates inside its own package so
-    # the bounded context is self-contained. Registering that directory on the
-    # search path lets `rentals/*.html` resolve without moving files into the
-    # legacy flat `templates/` tree.
+    # Every bounded context keeps its Jinja2 templates inside its own package, so
+    # each directory is registered on the search path. `profile` and `users` are
+    # the exceptions: their templates are still under the flat `templates/` tree
+    # and resolve through the first entry.
     #
-    # Resolved from this file rather than from CWD, so it holds no matter where
-    # the process was started from. `parents[2]` is `src/`.
-    rentals_templates = (
-        Path(__file__).resolve().parents[2]
-        / "rentals"
-        / "interfaces"
-        / "web"
-        / "templates"
-    )
+    # Resolved from this file rather than from CWD, so the paths hold no matter
+    # where the process was started from. `parents[2]` is `src/`.
+    src_root = Path(__file__).resolve().parents[2]
+    context_templates = [
+        src_root / context / "interfaces" / subdir
+        for context, subdir in (
+            ("budget", "templates"),
+            ("identity", "templates"),
+            ("rentals", "web/templates"),
+        )
+    ]
     app.jinja_loader = FileSystemLoader(
-        [Path(app.root_path) / "templates", rentals_templates]
+        [Path(app.root_path) / "templates", *context_templates]
     )
 
     # Load configuration

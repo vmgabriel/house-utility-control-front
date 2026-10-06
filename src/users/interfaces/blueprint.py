@@ -13,9 +13,9 @@ from flask import (
     url_for,
 )
 
-from src.infrastructure.api.drf_client import ServiceUnavailableError
-from src.infrastructure.auth.csrf import CSRFTokenManager
-from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
+from src.shared.auth.csrf import CSRFTokenManager
+from src.shared.auth.jwt_cookie_manager import JWTCookieManager
+from src.shared.http.drf_client import ServiceUnavailableError
 from src.users.domain.entities import UserPlan
 from src.users.interfaces.viewmodels import AdminUserViewModel
 

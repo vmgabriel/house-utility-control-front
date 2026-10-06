@@ -1,6 +1,6 @@
 """DRF User Repository Implementation."""
 
-from src.infrastructure.api.drf_client import DRFAPIClient, UnauthorizedError
+from src.shared.http.drf_client import DRFAPIClient, UnauthorizedError
 from src.users.domain.entities import SystemUser
 from src.users.domain.ports import UserRepositoryPort  # noqa: F401
 from src.users.infrastructure.schemas import DRFUserListResponse, DRFUserResponse

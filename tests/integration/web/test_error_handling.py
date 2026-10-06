@@ -18,9 +18,9 @@ import pytest
 import respx
 from flask import Flask
 
-from src.infrastructure.api.drf_client import ServiceUnavailableError
-from src.infrastructure.auth.jwt_cookie_manager import ACCESS_COOKIE, REFRESH_COOKIE
 from src.interfaces.web.app import create_app
+from src.shared.auth.jwt_cookie_manager import ACCESS_COOKIE, REFRESH_COOKIE
+from src.shared.http.drf_client import ServiceUnavailableError
 
 BASE = "http://api.test/api/v1"
 

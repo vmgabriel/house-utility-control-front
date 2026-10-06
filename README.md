@@ -15,7 +15,7 @@ Dependencies point inward — `interfaces → application → domain` — and `d
 
 Two adapter details worth knowing before reading the code:
 
-- `infrastructure/api/drf_client.py` is the outer boundary, so it is the *only* place `httpx` exceptions are caught. Nothing above it ever sees a socket error.
+- `shared/http/drf_client.py` is the outer boundary, so it is the *only* place `httpx` exceptions are caught. Nothing above it ever sees a socket error.
 - `AutoRefreshingRepository` decorates the protected repositories. A `401` from DRF triggers exactly one refresh and one retry, so an expired access token is invisible to the user.
 
 ## 🚀 Tech Stack
@@ -119,17 +119,28 @@ Proxying file bytes through the BFF would tie upload capacity and timeouts to th
 
 ```text
 src/
-├── shared/                 # SHARED KERNEL: auth, http client, base UI templates
+├── shared/                 # SHARED KERNEL: below every context, imports nothing from one
+│   ├── auth/               # JWT cookie manager, CSRF tokens
+│   ├── domain/             # DomainException, the root of the error hierarchy
+│   ├── http/               # DRFAPIClient, AutoRefreshingRepository
+│   ├── infrastructure/     # SystemClock
+│   └── utils/              # Currency formatting
 ├── budget/                 # BOUNDED CONTEXT: Transactions & Dashboard
+├── identity/               # BOUNDED CONTEXT: Login, Logout, Token Refresh
 ├── profile/                # BOUNDED CONTEXT: User Preferences
-├── users/                  # BOUNDED CONTEXT: Identity, Registration, Staff Admin
-├── rentals/                # BOUNDED CONTEXT: Properties, Bills, Payments (if applicable)
-└── interfaces/             # COMPOSITION ROOT: app.py, security.py, error templates
+├── users/                  # BOUNDED CONTEXT: Registration, Staff Admin
+├── rentals/                # BOUNDED CONTEXT: Properties, Bills, Payments
+└── interfaces/             # COMPOSITION ROOT: app.py, security.py, base + error templates
 tests/
-├── unit/                   # Pure domain and application tests
-├── integration/            # Infrastructure and web component tests
+├── unit/                   # Pure domain and application tests, one dir per context
+├── integration/            # Infrastructure, adapter and web component tests
 └── e2e/                    # Playwright end-to-end tests
 ```
+
+Every bounded context follows the same four layers — `domain/`, `application/`,
+`infrastructure/`, `interfaces/` — and owns its Jinja2 templates. The context
+boundaries are enforced, not merely documented: `tests/integration/test_context_boundaries.py`
+parses every import under `src/` and fails if one context reaches into another.
 
 Inside `interfaces/web/`, `app.py` is the composition root, `security.py` holds the response-header policy, and `templates/errors/503.html` is the outage page. It deliberately does not extend `base.html`: the error page must render with nothing but the request context available, so it cannot depend on the session, the flash queue, or the CSRF context processor — any of which might be what broke.
 

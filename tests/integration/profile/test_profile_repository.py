@@ -4,9 +4,9 @@ import httpx
 import pytest
 import respx
 
-from src.infrastructure.api.drf_client import DRFAPIClient, UnauthorizedError
 from src.profile.domain.entities import UserProfile
 from src.profile.infrastructure.repository import DRFProfileRepository
+from src.shared.http.drf_client import DRFAPIClient, UnauthorizedError
 
 PROFILE_JSON = {
     "id": "user-123",

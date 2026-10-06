@@ -1,9 +1,9 @@
 """DRF Profile Repository Implementation."""
 
-from src.infrastructure.api.drf_client import DRFAPIClient, UnauthorizedError
 from src.profile.domain.entities import UserProfile
 from src.profile.domain.ports import ProfileRepositoryPort  # noqa: F401
 from src.profile.infrastructure.schemas import DRFProfileResponse
+from src.shared.http.drf_client import DRFAPIClient, UnauthorizedError
 
 
 def _to_domain(data: DRFProfileResponse) -> UserProfile:

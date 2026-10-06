@@ -11,16 +11,18 @@ import inspect
 
 import pytest
 
-from src.domain.ports import (
-    AuthRepositoryPort,
+from src.budget.domain.ports import (
     DashboardRepositoryPort,
     TransactionRepositoryPort,
 )
-from src.infrastructure.repositories.auth_repository import DRFAuthRepository
-from src.infrastructure.repositories.dashboard_repository import DRFDashboardRepository
-from src.infrastructure.repositories.transaction_repository import (
+from src.budget.infrastructure.repositories.dashboard_repository import (
+    DRFDashboardRepository,
+)
+from src.budget.infrastructure.repositories.transaction_repository import (
     DRFTransactionRepository,
 )
+from src.identity.domain.ports import AuthRepositoryPort
+from src.identity.infrastructure.repository import DRFAuthRepository
 
 PAIRS = [
     (AuthRepositoryPort, DRFAuthRepository),

@@ -29,8 +29,6 @@ from flask import (
     url_for,
 )
 
-from src.infrastructure.auth.csrf import CSRFTokenManager
-from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
 from src.rentals.domain.exceptions import InvalidRentalsInputError, RentalsDomainError
 from src.rentals.domain.value_objects import (
     ApartmentId,
@@ -50,6 +48,8 @@ from src.rentals.interfaces.viewmodels import (
     UtilityReadingViewModel,
 )
 from src.rentals.interfaces.web.upload_proxy import UPLOAD_PROXY_BLUEPRINT
+from src.shared.auth.csrf import CSRFTokenManager
+from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.utils.currency import CurrencyPreference
 
 rentals_bp = Blueprint("rentals", __name__, url_prefix="/rentals")

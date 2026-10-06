@@ -54,8 +54,8 @@ from uuid import UUID
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.utils import secure_filename
 
-from src.infrastructure.auth.csrf import CSRF_HEADER
 from src.rentals.domain.exceptions import NextcloudUploadError
+from src.shared.auth.csrf import CSRF_HEADER
 
 #: The form field the browser uses to send the file.
 FILE_FIELD = "file"

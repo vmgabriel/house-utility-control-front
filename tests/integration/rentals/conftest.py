@@ -18,12 +18,12 @@ from uuid import uuid4
 
 import pytest
 
-from src.infrastructure.auth.jwt_cookie_manager import (
+from src.interfaces.web.app import create_app
+from src.rentals.application.wiring import build_rentals_use_cases
+from src.shared.auth.jwt_cookie_manager import (
     ACCESS_COOKIE,
     REFRESH_COOKIE,
 )
-from src.interfaces.web.app import create_app
-from src.rentals.application.wiring import build_rentals_use_cases
 
 BASE = "http://localhost:8000/api/v1"
 TODAY = date(2026, 10, 5)
@@ -159,7 +159,7 @@ def app():
 def authed_client(app):
     """A client carrying valid JWT cookies and a matching session.
 
-    Cookie names come from `src/infrastructure/auth/jwt_cookie_manager.py` rather
+    Cookie names come from `src/shared/auth/jwt_cookie_manager.py` rather
     than being hardcoded here, so a rename upstream cannot silently turn every
     test into a silent 302-to-login pass.
     """

@@ -14,33 +14,45 @@ The project is organized into isolated **Bounded Contexts** and a **Shared Kerne
 src/
 ├── shared/                 # SHARED KERNEL: Stable, generic, framework-agnostic
 │   ├── auth/               # JWTCookieManager, CSRFTokenManager
+│   ├── domain/             # DomainException root of the error hierarchy
 │   ├── http/               # Base DRFAPIClient, AutoRefreshingRepository proxy
-│   └── ui/                 # Base Jinja2 templates, Tailwind/Alpine setup
+│   ├── infrastructure/     # SystemClock
+│   └── utils/              # Currency formatting
 │
-├── budget/                 # BOUNDED CONTEXT: Personal Finance
+├── budget/                 # BOUNDED CONTEXT: Transactions & Dashboard
 │   ├── domain/             # PURE PYTHON: Entities, Value Objects (Money, SignedMoney), Ports
 │   ├── application/        # PURE PYTHON: Use Cases
 │   ├── infrastructure/     # DRF mappers, schemas, repository implementations
 │   └── interfaces/         # Flask blueprints, ViewModels, Jinja2 templates
 │
+├── identity/               # BOUNDED CONTEXT: Login, Logout, Token Refresh
+│   └── (same 4-layer structure)
+│
 ├── profile/                # BOUNDED CONTEXT: User Preferences
 │   └── (same 4-layer structure)
 │
-├── users/                  # BOUNDED CONTEXT: Identity, Registration, Staff Admin
+├── users/                  # BOUNDED CONTEXT: Registration, Staff Admin
 │   └── (same 4-layer structure)
 │
-└── interfaces/             # COMPOSITION ROOT (Legacy flat structure being migrated)
+├── rentals/                # BOUNDED CONTEXT: Properties, Bills, Payments
+│   └── (same 4-layer structure)
+│
+└── interfaces/             # COMPOSITION ROOT: no business logic lives here
     └── web/
         ├── app.py          # THE ONLY PLACE that knows about Flask, httpx, and all contexts
         ├── security.py     # Security headers middleware
-        └── templates/      # Legacy templates (being moved to context-specific folders)
+        └── templates/      # base.html + errors/, and profile/ + users/ (not yet migrated)
 ```
 
 ---
 
 ## 🚫 CRITICAL CONSTRAINTS (Do Not Violate)
 
-1. **NO Cross-Context Imports:** `src.budget` MUST NOT import from `src.profile` or `src.users`, and vice versa. They only communicate via the shared kernel or the external DRF API.
+1. **NO Cross-Context Imports:** `src.budget` MUST NOT import from `src.profile`, `src.users`, `src.identity` or `src.rentals`, and vice versa. They only communicate via the shared kernel or the external DRF API. **This is enforced**, by `tests/integration/test_context_boundaries.py`, which parses every import under `src/` and fails on a cross-context one. Adding a context is fine; reaching into one is not.
+
+   Vocabulary genuinely needed by two contexts goes in `src/shared`, not in whichever context happened to define it first. Two exceptions already exist and are deliberate: each context declares its own `UserId` (`rentals` as a validating class, `budget` and `identity` as `NewType`), and `budget` imports no identity vocabulary at all despite `Transaction` carrying a `user_id`.
+
+   `src/interfaces/web/app.py` is exempt. Wiring the contexts together is the composition root's one job.
 2. **Framework-Free Core:** `domain/` and `application/` layers MUST NOT import Flask, `httpx`, `pydantic`, `dotenv`, or any infrastructure code. They are pure Python (`dataclasses`, `typing`, `enum`, `decimal`).
 3. **Single Composition Root:** `src/interfaces/web/app.py` is the **only** module allowed to wire dependencies (e.g., injecting `DRFProfileRepository` into `GetProfileUseCase`).
 4. **No Generic 500 Handlers:** A 500 error is a bug. Let it crash and show the traceback. Only catch specific exceptions (like `httpx.ConnectError`) to render the branded `503.html` page.
@@ -240,10 +252,11 @@ except Exception:
 
 When adding a new feature (e.g., `goals`), do not stuff it into `budget`. Create a new isolated context:
 
-1. **Scaffold:** `mkdir -p src/goals/{domain,application,infrastructure,interfaces}`
+1. **Scaffold:** `mkdir -p src/goals/{domain,application,infrastructure,interfaces}`, each with an `__init__.py`. The directory listing above is what `tests/integration/test_context_boundaries.py` reads, so a context with no `__init__.py` is invisible to it and to the rule.
 2. **Domain:** Define pure Python entities, value objects, and `typing.Protocol` ports.
 3. **Application:** Write use cases that depend *only* on the ports.
-4. **Infrastructure:** Implement the repository using `DRFAPIClient` and `pydantic` schemas.
-5. **Interfaces:** Create a Flask `Blueprint`, ViewModels, and Jinja2 templates.
-6. **Wire:** Import the repository and use cases into `src/interfaces/web/app.py`, attach them to the `app` object, and register the blueprint.
-7. **Test:** Add unit, integration, and E2E tests. Run `make test-all`.
+4. **Infrastructure:** Implement the repository using `src.shared.http.DRFAPIClient` and `pydantic` schemas.
+5. **Interfaces:** Create a Flask `Blueprint`, ViewModels, and Jinja2 templates under `src/goals/interfaces/templates/`.
+6. **Templates:** Add `("goals", "templates")` to the `context_templates` list in `src/interfaces/web/app.py`, or the templates will not resolve at runtime. Nothing fails at import time on a missing entry here, so this is the one step with no test coverage.
+7. **Wire:** Import the repository and use cases into `src/interfaces/web/app.py`, attach them to the `app` object, and register the blueprint.
+8. **Test:** Add unit, integration, and E2E tests. Run `make test-all`. The boundary check needs no action — it discovers the new context on its own.

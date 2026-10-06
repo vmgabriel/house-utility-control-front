@@ -32,11 +32,6 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from src.infrastructure.api.drf_client import (
-    DRFAPIClient,
-    NotFoundError,
-    UnauthorizedError,
-)
 from src.rentals.application.mappers import (
     map_apartment,
     map_apartments_list,
@@ -72,6 +67,11 @@ from src.rentals.domain.value_objects import (
     Period,
     UtilityBill,
     UtilityType,
+)
+from src.shared.http.drf_client import (
+    DRFAPIClient,
+    NotFoundError,
+    UnauthorizedError,
 )
 
 

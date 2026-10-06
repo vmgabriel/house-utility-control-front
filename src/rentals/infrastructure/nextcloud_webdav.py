@@ -8,7 +8,7 @@ exception to AGENTS.md rule 6. Nothing in the domain or application layers may
 import it.
 
 It deliberately does *not* reuse the shared
-:class:`~src.infrastructure.api.drf_client.DRFAPIClient`.
+:class:`~src.shared.http.drf_client.DRFAPIClient`.
 That client speaks JSON with a Bearer token to the DRF backend; Nextcloud's
 WebDAV endpoint wants a byte stream with Basic auth and answers ``201``/``204``
 rather than JSON. Sharing one class would mean a client with two mutually

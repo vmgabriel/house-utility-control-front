@@ -12,10 +12,10 @@ from flask import (
     url_for,
 )
 
-from src.infrastructure.api.drf_client import ServiceUnavailableError
-from src.infrastructure.auth.csrf import CSRFTokenManager
-from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
 from src.profile.interfaces.viewmodels import ProfileViewModel
+from src.shared.auth.csrf import CSRFTokenManager
+from src.shared.auth.jwt_cookie_manager import JWTCookieManager
+from src.shared.http.drf_client import ServiceUnavailableError
 
 profile_bp = Blueprint("profile", __name__, url_prefix="/profile")
 

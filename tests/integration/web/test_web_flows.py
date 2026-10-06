@@ -12,11 +12,11 @@ import httpx
 import pytest
 import respx
 
-from src.infrastructure.auth.jwt_cookie_manager import (
+from src.interfaces.web.app import create_app
+from src.shared.auth.jwt_cookie_manager import (
     ACCESS_COOKIE,
     REFRESH_COOKIE,
 )
-from src.interfaces.web.app import create_app
 
 BASE = "http://api.test/api/v1"
 

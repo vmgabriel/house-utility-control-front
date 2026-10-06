@@ -3,8 +3,8 @@
 The only place domain objects become strings, labels, and CSS classes. Templates
 never touch domain objects directly, which keeps presentation out of the inner
 layers and makes every rendering decision unit-testable without a request
-context (see `src/interfaces/web/viewmodels.py` for the same idea in the legacy
-flat structure).
+context (see `src/budget/interfaces/viewmodels.py` for the same idea in the
+budget context).
 
 **Money is formatted here, never in a template.** Each `from_domain` takes the
 caller's `CurrencyPreference`, built from the profile context's `currency` and

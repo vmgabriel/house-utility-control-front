@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from src.infrastructure.api.drf_client import DRFAPIClient, UnauthorizedError
+from src.shared.http.drf_client import DRFAPIClient, UnauthorizedError
 from src.users.domain.entities import SystemUser, UserPlan
 from src.users.infrastructure.repository import DRFUserRepository
 
