@@ -1,1 +1,1 @@
-"""Shared kernel: cross-cutting concerns (Clock port, common exceptions)."""
+"""Shared kernel: cross-cutting ports (Clock), free of any framework."""

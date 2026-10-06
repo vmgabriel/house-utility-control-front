@@ -228,6 +228,265 @@ class DRFAPIClient:
                 "Failed to delete transaction", status_code=status, detail=body
             )
 
+    # ------------------------------------------------------------------ #
+    # Rentals
+    #
+    # These stay thin on purpose: they own the HTTP round trip and the status
+    # translation, and hand back the parsed body. Turning bodies into domain
+    # objects is `src/rentals/infrastructure/drf_client.py`'s job, and the
+    # mappers it calls live in the application layer, so no rentals vocabulary
+    # leaks into this shared client.
+    # ------------------------------------------------------------------ #
+    async def list_rentals_houses(self, access_token: str) -> Any:
+        status, body = await self._request(
+            "GET", "/rentals/houses/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list houses", status_code=status, detail=body
+            )
+        return body
+
+    async def create_rentals_house(self, access_token: str, payload: dict) -> Any:
+        status, body = await self._request(
+            "POST",
+            "/rentals/houses/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status in (400, 409):
+            raise ValidationError(
+                "House validation failed", status_code=status, detail=body
+            )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to create house", status_code=status, detail=body
+            )
+        return body
+
+    async def list_rentals_apartments(self, access_token: str, house_id: str) -> Any:
+        status, body = await self._request(
+            "GET",
+            "/rentals/apartments/",
+            access_token=access_token,
+            params={"house_id": house_id},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list apartments", status_code=status, detail=body
+            )
+        return body
+
+    async def create_rentals_apartment(self, access_token: str, payload: dict) -> Any:
+        status, body = await self._request(
+            "POST",
+            "/rentals/apartments/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status in (400, 409):
+            raise ValidationError(
+                "Apartment validation failed", status_code=status, detail=body
+            )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to create apartment", status_code=status, detail=body
+            )
+        return body
+
+    async def get_rentals_apartment(self, access_token: str, apartment_id: str) -> Any:
+        status, body = await self._request(
+            "GET",
+            f"/rentals/apartments/{apartment_id}/",
+            access_token=access_token,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch apartment", status_code=status, detail=body
+            )
+        return body
+
+    async def list_rentals_utility_readings(
+        self, access_token: str, apartment_id: str
+    ) -> Any:
+        status, body = await self._request(
+            "GET",
+            f"/rentals/apartments/{apartment_id}/utilities/",
+            access_token=access_token,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list utility readings",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
+    async def create_rentals_utility_reading(
+        self, access_token: str, apartment_id: str, payload: dict
+    ) -> Any:
+        status, body = await self._request(
+            "POST",
+            f"/rentals/apartments/{apartment_id}/utilities/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status in (400, 409):
+            raise ValidationError(
+                "Reading validation failed", status_code=status, detail=body
+            )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to record utility reading", status_code=status, detail=body
+            )
+        return body
+
+    async def get_rentals_utility_bill(
+        self,
+        access_token: str,
+        apartment_id: str,
+        utility_type: str,
+        year: int,
+        month: int,
+    ) -> Any:
+        status, body = await self._request(
+            "GET",
+            f"/rentals/apartments/{apartment_id}/utilities/bill/",
+            access_token=access_token,
+            params={"utility_type": utility_type, "year": year, "month": month},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch utility bill", status_code=status, detail=body
+            )
+        return body
+
+    async def list_rentals_payment_records(
+        self, access_token: str, apartment_id: str
+    ) -> Any:
+        status, body = await self._request(
+            "GET",
+            f"/rentals/apartments/{apartment_id}/payments/",
+            access_token=access_token,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list payments", status_code=status, detail=body
+            )
+        return body
+
+    async def create_rentals_payment(
+        self, access_token: str, apartment_id: str, payload: dict
+    ) -> Any:
+        status, body = await self._request(
+            "POST",
+            f"/rentals/apartments/{apartment_id}/payments/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status in (400, 409):
+            raise ValidationError(
+                "Payment validation failed", status_code=status, detail=body
+            )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to record payment", status_code=status, detail=body
+            )
+        return body
+
+    async def get_rentals_payment_summary(
+        self, access_token: str, apartment_id: str, year: int, month: int
+    ) -> Any:
+        status, body = await self._request(
+            "GET",
+            f"/rentals/apartments/{apartment_id}/payments/summary/",
+            access_token=access_token,
+            params={"year": year, "month": month},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch payment summary", status_code=status, detail=body
+            )
+        return body
+
+    async def list_rentals_documents(self, access_token: str, apartment_id: str) -> Any:
+        status, body = await self._request(
+            "GET",
+            f"/rentals/apartments/{apartment_id}/documents/",
+            access_token=access_token,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list documents", status_code=status, detail=body
+            )
+        return body
+
+    async def create_rentals_document(
+        self, access_token: str, apartment_id: str, payload: dict
+    ) -> Any:
+        # Note there is no multipart branch and no file parameter anywhere on
+        # this route: documents are uploaded straight from the browser to
+        # Nextcloud, and only the resulting URL reaches the BFF.
+        status, body = await self._request(
+            "POST",
+            f"/rentals/apartments/{apartment_id}/documents/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status in (400, 409):
+            raise ValidationError(
+                "Document validation failed", status_code=status, detail=body
+            )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Apartment not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to register document", status_code=status, detail=body
+            )
+        return body
+
     async def get_dashboard_overview(self, access_token: str) -> dict:
         status, body = await self._request(
             "GET", "/dashboard/overview/", access_token=access_token

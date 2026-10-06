@@ -72,12 +72,19 @@ def _require_aware(moment: datetime, label: str) -> None:
 
 
 def _normalize_optional_text(raw: str | None, limit: int, label: str) -> str | None:
-    """Trim, collapse, and map blank/empty to `None`."""
+    """Trim outer whitespace and map an empty result to `None`.
+
+    Unlike `House.name` and `ApartmentNumber`, which collapse internal runs of
+    whitespace with `" ".join(raw.split())` because they are single-line
+    identifiers, this preserves interior newlines: `Document.description` and
+    `PaymentRecord.notes` are `TextField` columns where a tenant's multi-line
+    notes must survive a round trip intact.
+    """
     if raw is None:
         return None
     if not isinstance(raw, str):
         raise ValueError(f"{label} must be a string or None.")
-    normalized = " ".join(raw.split())
+    normalized = raw.strip()
     if not normalized:
         return None
     if len(normalized) > limit:

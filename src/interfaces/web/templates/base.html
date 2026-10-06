@@ -27,6 +27,7 @@
                 <div class="hidden sm:flex items-center space-x-4">
                     <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Dashboard</a>
                     <a href="{{ url_for('transactions.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
+                    <a href="{{ url_for('rentals.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Rentals</a>
                     <a href="{{ url_for('profile.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Settings</a>
                     {% if current_user_is_staff %}
                     <a href="{{ url_for('users.admin_list') }}" class="text-gray-700 hover:text-purple-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded">Admin</a>

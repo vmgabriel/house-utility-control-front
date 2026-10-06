@@ -397,6 +397,120 @@ class Period:
         return date(self.year, self.month, 1).strftime("%B %Y")
 
 
+@dataclass(frozen=True, slots=True)
+class PaymentSummary:
+    """An apartment's rent payments aggregated over one calendar month.
+
+    Mirrors the backend's ``PaymentSummaryDetailsSerializer``. `total_paid` and
+    `outstanding_balance` are monetary totals, so they are quantised to cents;
+    the backend computes the same pair from the apartment's monthly rent minus
+    the sum of its payments for the period.
+    """
+
+    apartment_id: ApartmentId
+    period: Period
+    total_paid: Decimal
+    outstanding_balance: Decimal
+    payment_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.apartment_id, ApartmentId):
+            raise TypeError("Payment summary apartment must be an ApartmentId.")
+        if not isinstance(self.period, Period):
+            raise TypeError("Payment summary period must be a Period.")
+        total_paid = _to_decimal(self.total_paid, "Total paid", InvalidPaymentError)
+        balance = _to_decimal(
+            self.outstanding_balance, "Outstanding balance", InvalidPaymentError
+        )
+        # A negative outstanding balance means the tenant overpaid; that is a
+        # real state (credit), so it is preserved rather than clamped.
+        if total_paid < 0:
+            raise InvalidPaymentError("Total paid cannot be negative.")
+        if total_paid > MAX_MONEY_AMOUNT:
+            raise InvalidPaymentError("Total paid must not exceed 99999999.99.")
+        if abs(balance) > MAX_MONEY_AMOUNT:
+            raise InvalidPaymentError(
+                "Outstanding balance must not exceed 99999999.99."
+            )
+        if (
+            isinstance(self.payment_count, bool)
+            or not isinstance(self.payment_count, int)
+            or self.payment_count < 0
+        ):
+            raise ValueError("Payment count must be a non-negative integer.")
+        object.__setattr__(self, "total_paid", total_paid.quantize(CENT))
+        object.__setattr__(self, "outstanding_balance", balance.quantize(CENT))
+
+    @property
+    def is_settled(self) -> bool:
+        """True when nothing is outstanding for the period."""
+        return self.outstanding_balance <= 0
+
+    def __str__(self) -> str:
+        return (
+            f"{self.period.label}: {self.total_paid:.2f} paid, "
+            f"{self.outstanding_balance:.2f} outstanding"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class UtilityBill:
+    """One utility's consumption and cost aggregated over a calendar month.
+
+    Mirrors the backend's ``UtilityBillDetailsSerializer``. Unlike
+    :class:`PaymentSummary` this is scoped to a single ``utility_type``, because
+    the endpoint requires it as a query parameter.
+    """
+
+    apartment_id: ApartmentId
+    utility_type: UtilityType
+    period: Period
+    total_consumption: Reading
+    total_cost: Decimal
+    reading_count: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.apartment_id, ApartmentId):
+            raise TypeError("Utility bill apartment must be an ApartmentId.")
+        if not isinstance(self.utility_type, UtilityType):
+            raise TypeError("Utility bill utility type must be a UtilityType.")
+        if not isinstance(self.period, Period):
+            raise TypeError("Utility bill period must be a Period.")
+        if not isinstance(self.total_consumption, Reading):
+            raise TypeError("Utility bill consumption must be a Reading.")
+        total_cost = _to_decimal(self.total_cost, "Total cost", InvalidPaymentError)
+        if total_cost < 0:
+            raise InvalidPaymentError("Total cost cannot be negative.")
+        if total_cost > MAX_MONEY_AMOUNT:
+            raise InvalidPaymentError("Total cost must not exceed 99999999.99.")
+        if (
+            isinstance(self.reading_count, bool)
+            or not isinstance(self.reading_count, int)
+            or self.reading_count < 0
+        ):
+            raise ValueError("Reading count must be a non-negative integer.")
+        object.__setattr__(self, "total_cost", total_cost.quantize(CENT))
+
+    @property
+    def average_unit_cost(self) -> Decimal:
+        """Blended cost per unit across the period, or 0 when unused.
+
+        Guarded against a zero-consumption period, which is common for a meter
+        that was not read every month.
+        """
+        if self.total_consumption.amount == 0:
+            return Decimal("0.00")
+        return (self.total_cost / self.total_consumption.amount).quantize(
+            UNIT_COST_STEP
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{self.utility_type.value} {self.period.label}: "
+            f"{self.total_consumption} units, {self.total_cost:.2f}"
+        )
+
+
 def validate_document_url(file_url: object) -> str:
     """Validate a Nextcloud document URL.
 

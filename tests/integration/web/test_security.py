@@ -188,18 +188,49 @@ class TestSecurityHeaders:
         response = app.test_client().get("/auth/login")
         assert "Content-Security-Policy" not in response.headers
 
+    @staticmethod
+    def _concrete_url(rule) -> str:
+        """Turn a rule's pattern into a URL that actually matches it.
+
+        `rule.rule` contains placeholders like `<uuid:apartment_id>`, and posting
+        to that literal string 404s before the view runs -- so the route would be
+        silently skipped rather than covered. Substituting a valid sample per
+        converter makes the request reach the view, which is the whole point of
+        enumerating the URL map here.
+        """
+        import re
+        from uuid import uuid4
+
+        samples = {
+            "uuid": str(uuid4()),
+            "int": "1",
+            "float": "1.0",
+            "path": "probe",
+            "string": "probe",
+        }
+
+        def substitute(match: re.Match) -> str:
+            # group(1) is the converter (`uuid`, `int`, ...); None when the
+            # placeholder omitted it and uses the default `string` converter.
+            converter = match.group(1) or "string"
+            return samples.get(converter, "probe")
+
+        # Handles `<uuid:name>`, `<name>`, and `<path:name>` alike.
+        return re.sub(r"<(?:([^:>]+):)?[^>]+>", substitute, rule.rule)
+
     def test_headers_cover_every_registered_route(self, app, client):
         """Enumerate the URL map rather than a hand-kept list, so a route added
         after this test was written is covered automatically."""
         checked = 0
         for rule in app.url_map.iter_rules():
             if "POST" in rule.methods and rule.endpoint != "static":
-                # Unauthenticated POSTs bounce to the login page or 405; either
-                # way the status is what we are checking the headers on.
-                response = client.post(rule.rule, data={})
-                assert response.status_code in (302, 400, 405), rule.rule
+                # Unauthenticated POSTs bounce to the login page or 400/405;
+                # either way the status is what we are checking the headers on.
+                url = self._concrete_url(rule)
+                response = client.post(url, data={})
+                assert response.status_code in (302, 400, 405), url
                 for header, value in SECURITY_HEADERS.items():
-                    assert response.headers[header] == value, rule.rule
+                    assert response.headers[header] == value, url
                 checked += 1
         assert checked > 0
 

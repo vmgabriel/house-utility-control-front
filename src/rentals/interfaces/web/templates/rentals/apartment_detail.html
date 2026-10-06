@@ -1,0 +1,663 @@
+{% extends "base.html" %}
+{% block title %}Apartment {{ apartment.number }} &middot; Rentals{% endblock %}
+
+{% block content %}
+{#
+  ONE top-level x-data scope owns every interactive element below: the tab
+  switcher, the three tab panels, both modals, the live cost preview, and the
+  Nextcloud uploader. Alpine silently ignores directives outside an x-data
+  subtree, so nothing here may sit outside it (AGENTS.md).
+
+  Both features deliberately share this scope rather than nesting separate
+  components: the cost preview and the document uploader are independent, but
+  splitting them would mean two roots and risk the tab state drifting out of
+  sync with panel visibility.
+#}
+<div x-data="rentalsHub()" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <nav class="mb-4 text-sm text-gray-600">
+        <a href="{{ url_for('rentals.index') }}" class="hover:text-blue-600">Properties</a>
+        <span class="mx-1 text-gray-400">/</span>
+        <span class="text-gray-900">{{ apartment.house_id[:8] }}</span>
+    </nav>
+
+    <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h1 class="text-2xl font-bold text-gray-900">Apartment {{ apartment.number }}</h1>
+        <p class="text-sm text-gray-600">
+            Floor {{ apartment.floor }} &middot; {{ apartment.monthly_rent }}/mo
+        </p>
+    </div>
+
+    {# ------------------------------------------------------------------ #}
+    {# Payment summary for the period                                    #}
+    {# ------------------------------------------------------------------ #}
+    <section class="mt-6 p-5 bg-white rounded-lg shadow-sm border border-gray-200">
+        <h2 class="text-sm font-medium text-gray-600 uppercase tracking-wide">
+            Rent status &middot; {{ summary.period_label if summary else period.label }}
+        </h2>
+        {% if summary %}
+        <dl class="mt-3 grid gap-4 sm:grid-cols-3">
+            <div>
+                <dt class="text-sm text-gray-500">Paid</dt>
+                <dd class="text-lg font-semibold text-gray-900">{{ summary.total_paid }}</dd>
+            </div>
+            <div>
+                <dt class="text-sm text-gray-500">Outstanding</dt>
+                <dd class="text-lg font-semibold"
+                    :class="summary_outstanding_class">
+                    <span x-text="'{{ summary.outstanding_balance }}'"></span>
+                </dd>
+            </div>
+            <div>
+                <dt class="text-sm text-gray-500">Payments</dt>
+                <dd class="text-lg font-semibold text-gray-900">{{ summary.payment_count }}</dd>
+            </div>
+        </dl>
+        {% else %}
+        <p class="mt-2 text-sm text-gray-500">
+            No payments recorded for {{ period.label }} yet.
+        </p>
+        {% endif %}
+    </section>
+
+    {# ------------------------------------------------------------------ #}
+    {# Tabs                                                              #}
+    {# ------------------------------------------------------------------ #}
+    <div class="mt-8 border-b border-gray-200">
+        <nav class="flex gap-1" role="tablist">
+            <template x-for="tab in tabs" :key="tab.id">
+                <button type="button"
+                        @click="active = tab.id"
+                        :aria-selected="active === tab.id"
+                        :class="active === tab.id
+                            ? 'border-blue-600 text-blue-700 font-medium'
+                            : 'border-transparent text-gray-500 hover:text-gray-700'"
+                        class="px-4 py-2 -mb-px border-b-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        role="tab"
+                        x-text="tab.label"></button>
+            </template>
+        </nav>
+    </div>
+
+    {# ------------------------------- Documents --------------------- #}
+    <section x-show="active === 'documents'" x-cloak class="mt-6" role="tabpanel">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-gray-900">Documents</h2>
+            <button type="button" @click="showDocModal = true"
+                    class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Upload document
+            </button>
+        </div>
+
+        {% if documents %}
+        <ul class="divide-y divide-gray-200 bg-white rounded-lg border border-gray-200">
+            {% for document in documents %}
+            <li class="flex items-center justify-between gap-4 p-4">
+                <div class="min-w-0">
+                    <a href="{{ document.file_url }}" target="_blank" rel="noopener noreferrer"
+                       class="font-medium text-blue-700 hover:underline truncate block">{{ document.file_name }}</a>
+                    <p class="text-sm text-gray-500">
+                        {{ document.document_label }} &middot; {{ document.uploaded_at }}
+                    </p>
+                    {% if document.description %}
+                    <p class="mt-1 text-sm text-gray-600 whitespace-pre-line">{{ document.description }}</p>
+                    {% endif %}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="p-6 text-center text-gray-600 bg-white rounded-lg border border-dashed border-gray-300">
+            No documents yet.
+        </p>
+        {% endif %}
+    </section>
+
+    {# ------------------------------- Utilities --------------------- #}
+    <section x-show="active === 'utilities'" x-cloak class="mt-6" role="tabpanel">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-gray-900">Utility readings</h2>
+            <button type="button" @click="showReadingModal = true"
+                    class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Record reading
+            </button>
+        </div>
+
+        {% if readings %}
+        <div class="overflow-x-auto bg-white rounded-lg border border-gray-200">
+            <table class="min-w-full text-sm">
+                <thead class="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+                    <tr>
+                        <th class="px-4 py-2">Utility</th>
+                        <th class="px-4 py-2">Date</th>
+                        <th class="px-4 py-2 text-right">Previous</th>
+                        <th class="px-4 py-2 text-right">Current</th>
+                        <th class="px-4 py-2 text-right">Consumption</th>
+                        <th class="px-4 py-2 text-right">Unit cost</th>
+                        <th class="px-4 py-2 text-right">Total</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for reading in readings %}
+                    <tr>
+                        <td class="px-4 py-2 text-gray-900">{{ reading.utility_label }}</td>
+                        <td class="px-4 py-2 text-gray-600">{{ reading.reading_date }}</td>
+                        <td class="px-4 py-2 text-right text-gray-600">{{ reading.previous_reading }}</td>
+                        <td class="px-4 py-2 text-right text-gray-600">{{ reading.current_reading }}</td>
+                        <td class="px-4 py-2 text-right text-gray-900">{{ reading.consumption }}</td>
+                        <td class="px-4 py-2 text-right text-gray-600">{{ reading.unit_cost }}</td>
+                        <td class="px-4 py-2 text-right font-medium text-gray-900">{{ reading.total_cost }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="p-6 text-center text-gray-600 bg-white rounded-lg border border-dashed border-gray-300">
+            No readings recorded yet.
+        </p>
+        {% endif %}
+    </section>
+
+    {# ------------------------------- Payments ---------------------- #}
+    <section x-show="active === 'payments'" x-cloak class="mt-6" role="tabpanel">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-gray-900">Payments</h2>
+            <button type="button" @click="showPaymentModal = true"
+                    class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Record payment
+            </button>
+        </div>
+
+        {% if payments %}
+        <ul class="divide-y divide-gray-200 bg-white rounded-lg border border-gray-200">
+            {% for payment in payments %}
+            <li class="flex items-center justify-between gap-4 p-4">
+                <div class="min-w-0">
+                    <p class="font-medium text-gray-900">{{ payment.amount }}</p>
+                    <p class="text-sm text-gray-500">{{ payment.payment_date }}</p>
+                    {% if payment.notes %}
+                    <p class="mt-1 text-sm text-gray-600 whitespace-pre-line">{{ payment.notes }}</p>
+                    {% endif %}
+                </div>
+                <span class="shrink-0 px-2 py-1 text-xs font-medium rounded-full {{ payment.status_classes }}">
+                    {{ payment.status_label }}
+                </span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="p-6 text-center text-gray-600 bg-white rounded-lg border border-dashed border-gray-300">
+            No payments recorded yet.
+        </p>
+        {% endif %}
+    </section>
+
+    {# ================================================================== #}
+    {# Modal: record a utility reading, with the live cost preview        #}
+    {# ================================================================== #}
+    <div x-show="showReadingModal" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="showReadingModal = false" role="dialog" aria-modal="true"
+         aria-labelledby="reading-modal-title">
+        <div class="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl"
+             @click.outside="showReadingModal = false">
+            <h3 id="reading-modal-title" class="text-lg font-semibold text-gray-900">Record a reading</h3>
+            <p class="mt-1 text-sm text-gray-500">
+                Cost is calculated live as you type.
+            </p>
+
+            <form action="{{ url_for('rentals.apartment_detail', apartment_id=apartment.id) }}"
+                  method="POST" class="mt-4 grid gap-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="record_reading">
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Utility</span>
+                    <select name="utility_type" required x-model="utilityType"
+                            class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        {% for value, label in utility_types.items() %}
+                        <option value="{{ value }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Reading date</span>
+                    <input type="date" name="reading_date" required
+                           x-model="readingDate" :max="today"
+                           value="{{ today }}" :min="minReadingDate"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Previous reading</span>
+                        <input type="text" name="previous_reading" required inputmode="decimal"
+                               x-model="previousReading" @input="recompute()"
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Current reading</span>
+                        <input type="text" name="current_reading" required inputmode="decimal"
+                               x-model="currentReading" @input="recompute()"
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+                </div>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Unit cost per unit</span>
+                    <input type="text" name="unit_cost" required inputmode="decimal"
+                           x-model="unitCost" @input="recompute()"
+                           placeholder="3.2567"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <span class="mt-1 block text-xs text-gray-500">
+                        Up to four decimal places.
+                    </span>
+                </label>
+
+                {# Live preview. Same formula as UtilityReading.create on the
+                   server: consumption = current - previous, total = consumption
+                   * unit_cost. Mirrored here purely as a preview; the server
+                   value is authoritative and is what gets stored. #}
+                <div class="p-4 bg-blue-50 rounded-lg border border-blue-200"
+                     role="status" aria-live="polite">
+                    <div class="flex justify-between text-sm">
+                        <span class="text-gray-600">Estimated consumption</span>
+                        <span class="font-medium text-gray-900" x-text="previewConsumption"></span>
+                    </div>
+                    <div class="mt-1 flex justify-between text-base">
+                        <span class="text-gray-700">Estimated total</span>
+                        <span class="font-semibold text-blue-700" x-text="previewTotal"></span>
+                    </div>
+                    <p x-show="previewError" x-cloak x-text="previewError"
+                       class="mt-2 text-sm text-red-600"></p>
+                </div>
+
+                <div class="flex justify-end gap-3">
+                    <button type="button" @click="showReadingModal = false"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Cancel
+                    </button>
+                    <button type="submit" :disabled="!previewValid"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Save reading
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# ================================================================== #}
+    {# Modal: record a payment                                          #}
+    {# ================================================================== #}
+    <div x-show="showPaymentModal" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="showPaymentModal = false" role="dialog" aria-modal="true"
+         aria-labelledby="payment-modal-title">
+        <div class="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl"
+             @click.outside="showPaymentModal = false">
+            <h3 id="payment-modal-title" class="text-lg font-semibold text-gray-900">Record a payment</h3>
+
+            <form action="{{ url_for('rentals.apartment_detail', apartment_id=apartment.id) }}"
+                  method="POST" class="mt-4 grid gap-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="record_payment">
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Payment date</span>
+                    <input type="date" name="payment_date" required
+                           x-model="paymentDate" :max="today"
+                           value="{{ today }}"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Amount</span>
+                    <input type="text" name="amount" required inputmode="decimal"
+                           x-model="paymentAmount"
+                           placeholder="{{ apartment.monthly_rent }}"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Notes</span>
+                    <textarea name="notes" rows="3" maxlength="2000"
+                              class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                </label>
+
+                <div class="flex justify-end gap-3">
+                    <button type="button" @click="showPaymentModal = false"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Save payment
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# ================================================================== #}
+    {# Modal: upload a document straight to Nextcloud                    #}
+    {#                                                                     #}
+    {# The BFF never receives file bytes. Selecting a file PUTs it        #}
+    {# directly to the Nextcloud WebDAV endpoint; only on a 2xx does the  #}
+    {# hidden `file_url` get filled and the Save button unlock.            #}
+    {# ================================================================== #}
+    <div x-show="showDocModal" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="showDocModal = false" role="dialog" aria-modal="true"
+         aria-labelledby="doc-modal-title">
+        <div class="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl"
+             @click.outside="showDocModal = false">
+            <h3 id="doc-modal-title" class="text-lg font-semibold text-gray-900">Upload a document</h3>
+
+            <template x-if="!nextcloudConfigured">
+                <p class="mt-3 p-3 text-sm text-amber-800 bg-amber-50 rounded-lg border border-amber-200">
+                    Document upload is not configured. Please check
+                    <span x-text="nextcloudMissing.join(' and ')"></span> in .env
+                </p>
+            </template>
+
+            <form action="{{ url_for('rentals.apartment_detail', apartment_id=apartment.id) }}"
+                  method="POST" class="mt-4 grid gap-4"
+                  x-show="nextcloudConfigured">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="action" value="register_document">
+                {# Filled by the uploader once Nextcloud confirms the PUT. #}
+                <input type="hidden" name="file_url" x-model="fileUrl">
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Document type</span>
+                    <select name="document_type" required x-model="documentType"
+                            class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        {% for value, label in document_types.items() %}
+                        <option value="{{ value }}">{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">File</span>
+                    <input type="file" @change="onFileSelected($event)"
+                           :disabled="uploading || !nextcloudConfigured"
+                           class="mt-1 w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-100 file:text-sm file:font-medium hover:file:bg-gray-200">
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Description</span>
+                    <textarea name="description" rows="3" maxlength="2000"
+                              class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                </label>
+
+                <div class="p-3 text-sm rounded-lg border"
+                     :class="uploadStatusClass" x-show="uploadMessage" x-cloak
+                     role="status" aria-live="polite">
+                    <span x-text="uploadMessage"></span>
+                    <a x-show="uploadedUrl" x-cloak :href="uploadedUrl" target="_blank"
+                       rel="noopener noreferrer" class="block mt-1 underline truncate">Open uploaded file</a>
+                </div>
+
+                <div class="flex justify-end gap-3">
+                    <button type="button" @click="showDocModal = false"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            :disabled="!canSaveDocument"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        <span x-show="!uploading">Save document</span>
+                        <span x-show="uploading" x-cloak>Uploading&hellip;</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+{# The component is defined once, outside the x-data root: a function
+   declaration is inert markup. Registering it before Alpine boots keeps
+   `x-data="rentalsHub()"` from throwing on an undefined reference. #}
+<script>
+    document.addEventListener('alpine:init', () => {
+        const nextcloud = {{ nextcloud | tojson }};
+        const currency = {{ currency.to_js_config() | tojson }};
+
+        // Parses a user-entered decimal without letting a partial value throw.
+        // Returns null for anything unparseable so the caller can show a hint
+        // instead of NaN propagating into the preview.
+        const parseDecimal = (raw) => {
+            const text = String(raw ?? '').trim().replace(',', '.');
+            if (text === '' || !/^\d*\.?\d*$/.test(text)) return null;
+            const value = Number.parseFloat(text);
+            return Number.isFinite(value) ? value : null;
+        };
+
+        // Formats the live estimate using the SAME rules the server used, taken
+        // from `CurrencyPreference.to_js_config()`. A hardcoded symbol and a
+        // hardcoded locale here are what made the preview disagree with the
+        // stored total for every user whose currency was not the default.
+        //
+        // The digits are grouped manually rather than through `toLocaleString`,
+        // because the available ICU locales do not reliably cover every
+        // currency's conventions and the separators are already decided
+        // server-side.
+        const formatMoney = (value) => {
+            const negative = value < 0;
+            const fixed = Math.abs(value).toFixed(currency.places);
+            const [whole, fraction] = fixed.split('.');
+            const grouped = whole.replace(
+                /\B(?=(\d{3})+(?!\d))/g,
+                currency.groupSeparator
+            );
+            const tail = fraction ? currency.fractionSeparator + fraction : '';
+            const sign = negative ? '-' : '';
+            return sign + currency.symbol + grouped + tail;
+        };
+
+        Alpine.data('rentalsHub', () => ({
+            // Tabs
+            tabs: [
+                { id: 'documents', label: 'Documents' },
+                { id: 'utilities', label: 'Utilities' },
+                { id: 'payments', label: 'Payments' },
+            ],
+            active: 'documents',
+
+            // Modal visibility
+            showReadingModal: false,
+            showPaymentModal: false,
+            showDocModal: false,
+
+            // Date ceilings, taken from the server-rendered `today` so the
+            // browser clock can never allow a date the use case would reject.
+            today: '{{ today }}',
+            minReadingDate: '{{ today }}',
+
+            // ---- Utility reading form + live cost preview ----
+            utilityType: '{{ utility_types.keys() | first }}',
+            readingDate: '{{ today }}',
+            previousReading: '',
+            currentReading: '',
+            unitCost: '',
+            previewConsumption: '—',
+            previewTotal: '—',
+            previewError: '',
+            previewValid: false,
+
+            // ---- Payment form ----
+            paymentDate: '{{ today }}',
+            paymentAmount: '',
+
+            // ---- Document form + Nextcloud direct upload ----
+            documentType: '{{ document_types.keys() | first }}',
+            fileUrl: '',
+            uploadedUrl: '',
+            uploadMessage: '',
+            uploadError: false,
+            uploading: false,
+
+            // Both settings come from the server-rendered config; no account
+            // credentials are involved, so there is nothing secret here beyond
+            // the share token, which is scoped to the drop folder.
+            nextcloudConfigured: Boolean(
+                nextcloud.webdavBaseUrl && nextcloud.shareToken
+            ),
+            nextcloudMissing: nextcloud.missing || [],
+
+            get summary_outstanding_class() {
+                {% if summary and not summary.is_settled %}
+                return 'text-red-600';
+                {% else %}
+                return 'text-green-700';
+                {% endif %}
+            },
+
+            get canSaveDocument() {
+                // Only unlocked after Nextcloud accepted the PUT, so the backend
+                // never receives a file_url that does not resolve.
+                return Boolean(this.fileUrl) && !this.uploading;
+            },
+
+            get uploadStatusClass() {
+                return this.uploadError
+                    ? 'text-red-700 bg-red-50 border-red-200'
+                    : 'text-green-700 bg-green-50 border-green-200';
+            },
+
+            recompute() {
+                const previous = parseDecimal(this.previousReading);
+                const current = parseDecimal(this.currentReading);
+                const unitCost = parseDecimal(this.unitCost);
+
+                this.previewError = '';
+
+                if (previous === null || current === null || unitCost === null) {
+                    this.previewConsumption = '—';
+                    this.previewTotal = '—';
+                    this.previewValid = false;
+                    return;
+                }
+                if (current < previous) {
+                    this.previewConsumption = '—';
+                    this.previewTotal = '—';
+                    this.previewValid = false;
+                    this.previewError =
+                        'Current reading cannot be lower than the previous reading.';
+                    return;
+                }
+
+                const consumption = current - previous;
+                this.previewConsumption = consumption.toFixed(2);
+                this.previewTotal = formatMoney(consumption * unitCost);
+                this.previewValid = true;
+            },
+
+            async onFileSelected(event) {
+                const file = event.target.files?.[0];
+                if (!file) return;
+
+                this.uploading = true;
+                this.uploadMessage = `Uploading ${file.name}…`;
+                this.uploadError = false;
+                // Reset first: a failed re-upload must not leave the previous
+                // file's URL armed on the form.
+                this.fileUrl = '';
+                this.uploadedUrl = '';
+
+                try {
+                    // Verified against the live Nextcloud: the public-share
+                    // WebDAV root already scopes to the share, so the token goes
+                    // in the Authorization header ONLY and must NOT appear as a
+                    // path segment. `<base>/<token>/<file>` returns 401; the
+                    // working shape is `<base>/<file>`.
+                    //
+                    // The Authorization header is REQUIRED. Verified: a PUT
+                    // without it returns 401, and the OPTIONS preflight fails
+                    // with 401 too. Removing it is not a workaround -- PUT is not
+                    // a CORS-simple method, so the preflight happens either way.
+                    const target =
+                        nextcloud.webdavBaseUrl.replace(/\/+$/, '') +
+                        '/' +
+                        encodeURIComponent(file.name);
+
+                    // Public WebDAV authenticates with the share token as the
+                    // username and an EMPTY password. No account credential is
+                    // involved, so nothing sensitive is rendered into the page.
+                    const credentials = btoa(`${nextcloud.shareToken}:`);
+
+                    const response = await fetch(target, {
+                        method: 'PUT',
+                        headers: {
+                            Authorization: `Basic ${credentials}`,
+                            'Content-Type': file.type || 'application/octet-stream',
+                        },
+                        body: file,
+                    });
+
+                    // 200/201 and 204 all mean "stored". Anything else means the
+                    // URL must not be submitted.
+                    if (response.ok) {
+                        this.fileUrl = target;
+                        this.uploadedUrl = target;
+                        this.uploadMessage = 'File uploaded. You can now save the reference.';
+                    } else if (response.status === 401) {
+                        // Reached only if the token was rotated or the share was
+                        // revoked; a CORS block would not produce a readable
+                        // status at all, it would reject the promise below.
+                        this.uploadError = true;
+                        this.uploadMessage =
+                            'Nextcloud rejected the share token (HTTP 401). Check NEXTCLOUD_SHARE_TOKEN.';
+                    } else {
+                        this.uploadError = true;
+                        this.uploadMessage = `Nextcloud rejected the upload (HTTP ${response.status}).`;
+                    }
+                } catch (error) {
+                    this.uploadError = true;
+                    this.uploadMessage = this.diagnoseUploadFailure(error);
+                } finally {
+                    this.uploading = false;
+                }
+            },
+
+            /**
+             * Explain a rejected `fetch`.
+             *
+             * The browser deliberately hides the reason: when Nextcloud answers
+             * the preflight without `Access-Control-Allow-Origin`, the promise
+             * rejects with a bare `TypeError` and the real 401/200 is
+             * unreachable from JavaScript. So a `TypeError` here almost always
+             * means CORS, not a dead network -- and "check the server
+             * configuration" would send an operator hunting in the wrong place.
+             *
+             * Note that CORS is enforced by the browser, so this branch cannot
+             * distinguish a blocked response from a genuine DNS/TCP failure.
+             * `curl` against the same URL succeeds in both cases, which is why
+             * this needs a real browser to observe.
+             */
+            diagnoseUploadFailure(error) {
+                const host = (() => {
+                    try {
+                        return new URL(nextcloud.webdavBaseUrl).host;
+                    } catch {
+                        return 'the configured host';
+                    }
+                })();
+
+                if (error instanceof TypeError) {
+                    return (
+                        'Upload blocked by the browser. Nextcloud must return ' +
+                        'Access-Control-Allow-Origin for /public.php/webdav, ' +
+                        `otherwise the response cannot be read from ${host}.`
+                    );
+                }
+                return `Could not reach Nextcloud at ${host}. Check the server configuration.`;
+            },
+        }));
+    });
+</script>
+{% endblock %}

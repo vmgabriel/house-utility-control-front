@@ -21,15 +21,55 @@ from typing import Any
 
 
 @dataclass
+class ApartmentDetails:
+    id: str
+    house_id: str
+    number: str
+    floor: int
+    monthly_rent: Decimal
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class CreateApartmentRequest:
+    house_id: str
+    number: str
+    monthly_rent: Decimal
+    floor: int | None = 1
+
+
+@dataclass
+class CreateHouseRequest:
+    name: str
+    street: str
+    city: str
+    state: str
+    country: str
+
+
+@dataclass
 class CustomTokenObtainPairRequest:
     email: str
     password: str
+
+
+class DashboardSummaryStatusEnum(Enum):
+    fresh = "fresh"
+    stale = "stale"
 
 
 class DateFormatEnum(Enum):
     YYYY_MM_DD = "YYYY-MM-DD"
     DD_MM_YYYY = "DD/MM/YYYY"
     MM_DD_YYYY = "MM/DD/YYYY"
+
+
+class DocumentTypeEnum(Enum):
+    ID_CARD = "ID_CARD"
+    LEASE_CONTRACT = "LEASE_CONTRACT"
+    EMPLOYMENT_CERTIFICATE = "EMPLOYMENT_CERTIFICATE"
+    OTHER = "OTHER"
 
 
 @dataclass
@@ -43,6 +83,19 @@ class ErrorPayload:
 class ErrorResponse:
     error: ErrorPayload
     detail: str | None = None
+
+
+@dataclass
+class HouseDetails:
+    id: str
+    owner_id: str
+    name: str
+    street: str
+    city: str
+    state: str
+    country: str
+    created_at: str
+    updated_at: str
 
 
 @dataclass
@@ -63,6 +116,22 @@ class PatchedBanUserRequest:
 
 
 @dataclass
+class PatchedUpdateApartmentRequest:
+    number: str | None = None
+    floor: int | None = None
+    monthly_rent: Decimal | None = None
+
+
+@dataclass
+class PatchedUpdateHouseRequest:
+    name: str | None = None
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+
+
+@dataclass
 class PatchedUpdatePreferencesRequest:
     language: str | None = None
     currency: str | None = None
@@ -76,6 +145,16 @@ class PatchedUpdateProfileRequest:
     timezone: str | None = None
     avatar_url: str | None = None
     bio: str | None = None
+
+
+@dataclass
+class PaymentSummaryDetails:
+    apartment_id: str
+    year: int
+    month: int
+    total_paid: Decimal
+    outstanding_balance: Decimal
+    payment_count: int
 
 
 class PeriodEnum(Enum):
@@ -106,15 +185,24 @@ class Profile:
 
 
 @dataclass
+class RecordPaymentRequest:
+    payment_date: str
+    amount: Decimal
+    notes: str | None = None
+
+
+@dataclass
 class RegistrationRequest:
     email: str
     full_name: str
     password: str
 
 
-class StatusEnum(Enum):
-    fresh = "fresh"
-    stale = "stale"
+class StatusE00Enum(Enum):
+    PENDING = "PENDING"
+    PARTIAL = "PARTIAL"
+    PAID = "PAID"
+    OVERDUE = "OVERDUE"
 
 
 @dataclass
@@ -145,6 +233,13 @@ class TransactionTypeEnum(Enum):
 
 
 @dataclass
+class UploadDocumentRequest:
+    document_type: DocumentTypeEnum
+    file_url: str
+    description: str | None = None
+
+
+@dataclass
 class User:
     id: str
     email: str
@@ -163,6 +258,12 @@ class UserPage:
     page: int
     page_size: int
     results: list[User]
+
+
+class UtilityTypeEnum(Enum):
+    WATER = "WATER"
+    ELECTRICITY = "ELECTRICITY"
+    GAS = "GAS"
 
 
 @dataclass
@@ -185,12 +286,29 @@ class DashboardSummary:
     generated_at: str
     is_stale: bool
     stale_at: str
-    status: StatusEnum
+    status: DashboardSummaryStatusEnum
+
+
+@dataclass
+class DocumentDetails:
+    id: str
+    apartment_id: str
+    document_type: DocumentTypeEnum
+    file_url: str
+    description: str
+    uploaded_at: str
 
 
 @dataclass
 class PatchedChangeUserPlanRequest:
     plan: PlanEnum | None = None
+
+
+@dataclass
+class PatchedUpdatePaymentRequest:
+    amount: Decimal | None = None
+    status: StatusE00Enum | None = None
+    notes: str | None = None
 
 
 @dataclass
@@ -200,6 +318,26 @@ class PatchedUpdateTransactionRequest:
     category: str | None = None
     date: str | None = None
     description: str | None = None
+
+
+@dataclass
+class PaymentRecordDetails:
+    id: str
+    apartment_id: str
+    payment_date: str
+    amount: Decimal
+    status: StatusE00Enum
+    notes: str
+    created_at: str
+
+
+@dataclass
+class RecordUtilityReadingRequest:
+    utility_type: UtilityTypeEnum
+    reading_date: str
+    current_reading: Decimal
+    previous_reading: Decimal
+    unit_cost: Decimal
 
 
 @dataclass
@@ -220,6 +358,31 @@ class TransactionPage:
     page: int
     page_size: int
     results: list[Transaction]
+
+
+@dataclass
+class UtilityBillDetails:
+    apartment_id: str
+    utility_type: UtilityTypeEnum
+    year: int
+    month: int
+    total_consumption: Decimal
+    total_cost: Decimal
+    reading_count: int
+
+
+@dataclass
+class UtilityReadingDetails:
+    id: str
+    apartment_id: str
+    utility_type: UtilityTypeEnum
+    reading_date: str
+    current_reading: Decimal
+    previous_reading: Decimal
+    consumption: Decimal
+    unit_cost: Decimal
+    total_cost: Decimal
+    created_at: str
 
 
 @dataclass

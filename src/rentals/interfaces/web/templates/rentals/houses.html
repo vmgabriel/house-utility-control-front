@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Rentals &middot; Budget Tracker{% endblock %}
+
+{% block content %}
+{#
+  ONE top-level x-data scope owns both the Create House button and its modal.
+  Alpine silently ignores directives outside an x-data subtree, so the button
+  outside this container would do nothing at all (AGENTS.md).
+#}
+<div x-data="{ showCreateModal: false }"
+     class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Your properties</h1>
+            <p class="mt-1 text-sm text-gray-600">
+                {{ houses|length }} propert{{ 'y' if houses|length == 1 else 'ies' }}
+            </p>
+        </div>
+        <button type="button" @click="showCreateModal = true"
+                class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Create house
+        </button>
+    </div>
+
+    {% if houses %}
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {% for house in houses %}
+        <a href="{{ url_for('rentals.house_detail', house_id=house.id) }}"
+           class="block p-5 bg-white rounded-lg shadow-sm border border-gray-200 hover:border-blue-400 hover:shadow transition focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            <h2 class="font-semibold text-gray-900">{{ house.name }}</h2>
+            <p class="mt-2 text-sm text-gray-600">{{ house.address.one_line }}</p>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300">
+        <p class="text-gray-600">No properties yet.</p>
+        <p class="mt-1 text-sm text-gray-500">
+            Use <span class="font-medium">Create house</span> to add your first property.
+        </p>
+    </div>
+    {% endif %}
+
+    {# ------------------------------------------------------------------ #}
+    {# Modal: create a property                                          #}
+    {#                                                                     #}
+    {# No owner field: the backend derives ownership from the JWT, so     #}
+    {# sending one would be ignored.                                      #}
+    {# ------------------------------------------------------------------ #}
+    <div x-show="showCreateModal" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="showCreateModal = false" role="dialog" aria-modal="true"
+         aria-labelledby="create-house-title">
+        <div class="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl max-h-[90vh] overflow-y-auto"
+             @click.outside="showCreateModal = false">
+            <h3 id="create-house-title" class="text-lg font-semibold text-gray-900">Create a property</h3>
+
+            <form action="{{ url_for('rentals.create_house') }}" method="POST"
+                  class="mt-4 grid gap-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Name</span>
+                    <input type="text" name="name" required maxlength="200"
+                           placeholder="Sobrado House"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Street</span>
+                    <input type="text" name="street" required maxlength="200"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                {# City / state / country share the backend's 100-char limit,
+                   matching the Address value object. #}
+                <div class="grid gap-4 sm:grid-cols-3">
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">City</span>
+                        <input type="text" name="city" required maxlength="100"
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">State</span>
+                        <input type="text" name="state" required maxlength="100"
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Country</span>
+                        <input type="text" name="country" required maxlength="100"
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-2">
+                    <button type="button" @click="showCreateModal = false"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Create house
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

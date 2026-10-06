@@ -7,10 +7,12 @@ below this module knows that Flask or httpx exist.
 
 import os
 from datetime import date
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
 from flask import Flask, Response, g, redirect, render_template, request, url_for
+from jinja2 import FileSystemLoader
 from werkzeug.exceptions import ServiceUnavailable
 
 from src.application.use_cases.auth import (
@@ -46,6 +48,10 @@ from src.profile.application.use_cases import (
 )
 from src.profile.infrastructure.repository import DRFProfileRepository
 from src.profile.interfaces.blueprint import profile_bp
+from src.rentals.application.wiring import build_rentals_use_cases
+from src.rentals.infrastructure.drf_client import DrfRentalsClient
+from src.rentals.interfaces.web.routes import rentals_bp
+from src.shared.infrastructure.clock import SystemClock
 from src.users.application.use_cases import (
     ListUsersUseCase,
     RegisterUserUseCase,
@@ -63,7 +69,24 @@ TRUTHY_VALUES = ("true", "1", "yes", "on")
 
 
 def create_app() -> Flask:
-    app = Flask(__name__)
+    app = Flask(__name__, template_folder="templates")
+    # The rentals context keeps its Jinja2 templates inside its own package so
+    # the bounded context is self-contained. Registering that directory on the
+    # search path lets `rentals/*.html` resolve without moving files into the
+    # legacy flat `templates/` tree.
+    #
+    # Resolved from this file rather than from CWD, so it holds no matter where
+    # the process was started from. `parents[2]` is `src/`.
+    rentals_templates = (
+        Path(__file__).resolve().parents[2]
+        / "rentals"
+        / "interfaces"
+        / "web"
+        / "templates"
+    )
+    app.jinja_loader = FileSystemLoader(
+        [Path(app.root_path) / "templates", rentals_templates]
+    )
 
     # Load configuration
     app.config.from_prefixed_env()
@@ -80,6 +103,31 @@ def create_app() -> Flask:
     dashboard_repo = DRFDashboardRepository(api_client)
     profile_repo = DRFProfileRepository(api_client)
     user_repo = DRFUserRepository(api_client)
+    rentals_client = DrfRentalsClient(api_client)
+
+    # Nextcloud public-share (drop folder) upload settings.
+    #
+    # Deliberately no username or password. The browser PUTs straight to
+    # Nextcloud's `public.php/webdav` endpoint, where the share token acts as the
+    # username with an empty password. That keeps real account credentials out
+    # of the DOM entirely -- anything rendered into a page is readable by every
+    # user who loads it, so an account password would be exposed to all of them.
+    # A share token is scoped to one upload folder and can be rotated by
+    # revoking the share.
+    #
+    # Read into app config rather than `os.environ` inside the template, so the
+    # values stay injectable in tests and a missing setting renders a disabled
+    # control rather than an undefined JavaScript identifier.
+    app.config["NEXTCLOUD_WEBDAV_BASE_URL"] = os.getenv("NEXTCLOUD_WEBDAV_BASE_URL", "")
+    app.config["NEXTCLOUD_SHARE_TOKEN"] = os.getenv("NEXTCLOUD_SHARE_TOKEN", "")
+
+    # The shared clock is exposed on the app so views read "today" from one
+    # injectable source instead of calling `date.today()` directly.
+    app.clock = SystemClock()
+
+    # Exposed so tests can rebuild a bounded context's use cases against a
+    # substitute adapter or a frozen clock without reaching into this factory.
+    app.extensions["rentals_api_client"] = rentals_client
 
     # Initialize security managers
     cookie_config = CookieConfig(
@@ -111,6 +159,10 @@ def create_app() -> Flask:
     safe_dashboard_repo = refreshing(dashboard_repo)
     safe_profile_repo = refreshing(profile_repo)
     safe_user_repo = refreshing(user_repo)
+    # Rentals goes through the same proxy. Its adapter methods take the access
+    # token as their first positional argument precisely so this works: the proxy
+    # identifies the token by position and substitutes the refreshed one there.
+    safe_rentals_client = refreshing(rentals_client)
 
     app.auth_use_case = AuthenticateUserUseCase(auth_repository=auth_repo)
     app.logout_use_case = LogoutUserUseCase(auth_repository=auth_repo)
@@ -144,6 +196,10 @@ def create_app() -> Flask:
     app.list_users_use_case = ListUsersUseCase(repository=safe_user_repo)
     app.update_user_plan_use_case = UpdateUserPlanUseCase(repository=safe_user_repo)
     app.toggle_user_active_use_case = ToggleUserActiveUseCase(repository=safe_user_repo)
+
+    # Rentals use cases, built in their own composition root so no view ever
+    # assembles one.
+    build_rentals_use_cases(safe_rentals_client, clock=app.clock).attach_to(app)
 
     # Registered first on purpose. Flask runs `after_request` hooks in reverse
     # registration order, so this one executes last -- after the cookie hook
@@ -224,6 +280,7 @@ def create_app() -> Flask:
     app.register_blueprint(transactions_bp)
     app.register_blueprint(profile_bp)
     app.register_blueprint(users_bp)
+    app.register_blueprint(rentals_bp)
 
     # Root route
     @app.route("/")

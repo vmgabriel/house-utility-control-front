@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ house.name }} &middot; Rentals{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <nav class="mb-4 text-sm text-gray-600">
+        <a href="{{ url_for('rentals.index') }}" class="hover:text-blue-600">Properties</a>
+        <span class="mx-1 text-gray-400">/</span>
+        <span class="text-gray-900">{{ house.name }}</span>
+    </nav>
+
+    <h1 class="text-2xl font-bold text-gray-900">{{ house.name }}</h1>
+    <p class="mt-1 text-sm text-gray-600">{{ house.address.one_line }}</p>
+
+    <h2 class="mt-8 text-lg font-semibold text-gray-900">
+        Apartments
+        <span class="ml-1 text-sm font-normal text-gray-500">({{ apartments|length }})</span>
+    </h2>
+
+    {% if apartments %}
+    <ul class="mt-4 divide-y divide-gray-200 bg-white rounded-lg border border-gray-200">
+        {% for apartment in apartments %}
+        <li>
+            <a href="{{ url_for('rentals.apartment_detail', apartment_id=apartment.id) }}"
+               class="flex items-center justify-between p-4 hover:bg-gray-50 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                <span class="font-medium text-gray-900">Apartment {{ apartment.number }}</span>
+                <span class="text-sm text-gray-600">
+                    Floor {{ apartment.floor }} &middot; {{ apartment.monthly_rent }}/mo
+                </span>
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="mt-4 p-6 text-center text-gray-600 bg-white rounded-lg border border-dashed border-gray-300">
+        No apartments registered for this property.
+    </p>
+    {% endif %}
+
+    {# One top-level x-data scope owns every interactive element on the page:
+       the create-apartment toggle, the form, and its submit button. A button
+       outside this subtree would silently do nothing (AGENTS.md). #}
+    <div x-data="{ showForm: false }" class="mt-8">
+        <button type="button" @click="showForm = !showForm"
+                class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Add apartment
+        </button>
+
+        <form x-show="showForm" x-cloak
+              action="{{ url_for('rentals.create_apartment', house_id=house.id) }}"
+              method="POST"
+              class="mt-4 p-5 bg-white rounded-lg border border-gray-200 grid gap-4 sm:grid-cols-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <label class="block">
+                <span class="text-sm font-medium text-gray-700">Number</span>
+                <input type="text" name="number" required maxlength="20"
+                       class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </label>
+
+            <label class="block">
+                <span class="text-sm font-medium text-gray-700">Floor</span>
+                <input type="number" name="floor" value="1" min="0" step="1"
+                       class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </label>
+
+            <label class="block sm:col-span-2">
+                <span class="text-sm font-medium text-gray-700">Monthly rent</span>
+                <input type="text" name="monthly_rent" required inputmode="decimal"
+                       placeholder="2500.00"
+                       class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </label>
+
+            <div class="sm:col-span-2">
+                <button type="submit"
+                        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    Create apartment
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

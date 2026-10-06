@@ -131,6 +131,43 @@ validate the result parses as JSON before generating.
 Do **not** regenerate-and-hope. Add it to the hand-written pydantic schema and
 the mapper first, then run `make sync-api-contract` so the contract catches up.
 
+### Nextcloud document uploads (drop folder)
+
+Documents never pass through Flask. The browser `PUT`s the file directly to a
+Nextcloud **public share** (drop folder) and submits only the resulting URL.
+
+Two facts about this flow were established by testing the live server, not by
+reading the docs, and both contradict the obvious guess:
+
+1. **The `Authorization` header is required, and the token must not be in the
+   path.** The share authenticates as `Authorization: Basic base64(token + ":")`
+   against `<base>/<filename>`. A token in the path (`<base>/<token>/<file>`)
+   returns `401`, and so does a request with the header removed -- including its
+   `OPTIONS` preflight. Removing the header is not a CORS workaround: `PUT` is
+   not a CORS-simple method, so the preflight happens either way.
+
+2. **There are no account credentials, by design.** Only
+   `NEXTCLOUD_WEBDAV_BASE_URL` and `NEXTCLOUD_SHARE_TOKEN` are configured.
+   Anything the browser sends is readable in the DOM by every user who loads the
+   page, so a real account password would be disclosed to all of them. Do not
+   reintroduce `NEXTCLOUD_USERNAME` / `NEXTCLOUD_PASSWORD`.
+
+Because the upload is cross-origin, **the reverse proxy in front of Nextcloud
+must add CORS headers for `/public.php/webdav/*`** or the browser discards a
+response that actually succeeded:
+
+```apache
+Header always set Access-Control-Allow-Origin "https://<bff-origin>"
+Header always set Access-Control-Allow-Methods "PUT, OPTIONS"
+Header always set Access-Control-Allow-Headers "Authorization, Content-Type"
+```
+
+**`curl` cannot verify any of this.** It ignores CORS and does not preflight, so
+a curl-only check will report success while every browser fails. Verify with a
+real browser, or by sending an explicit `Origin` header and inspecting the
+response for `access-control-allow-origin`. The uploader surfaces this specific
+failure to users via `diagnoseUploadFailure` in the hub template.
+
 ---
 
 ## ⚙️ Key Behavioral Patterns
