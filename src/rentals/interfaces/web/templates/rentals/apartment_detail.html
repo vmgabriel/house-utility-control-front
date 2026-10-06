@@ -501,12 +501,9 @@
             uploadError: false,
             uploading: false,
 
-            // Both settings come from the server-rendered config; no account
-            // credentials are involved, so there is nothing secret here beyond
-            // the share token, which is scoped to the drop folder.
-            nextcloudConfigured: Boolean(
-                nextcloud.webdavBaseUrl && nextcloud.shareToken
-            ),
+            // A same-origin path only. There is no credential here at all --
+            // nothing in this page can leak anything to another user.
+            nextcloudConfigured: Boolean(nextcloud.uploadUrl),
             nextcloudMissing: nextcloud.missing || [],
 
             get summary_outstanding_class() {
@@ -570,30 +567,29 @@
                 this.uploadedUrl = '';
 
                 try {
-                    // Verified against the live Nextcloud: the public-share
-                    // WebDAV root already scopes to the share, so the token goes
-                    // in the Authorization header ONLY and must NOT appear as a
-                    // path segment. `<base>/<token>/<file>` returns 401; the
-                    // working shape is `<base>/<file>`.
+                    // Same-origin PUT to the path the reverse proxy forwards to
+                    // Nextcloud. No `Authorization` header is sent, and none is
+                    // needed: the proxy injects it from its own environment.
                     //
-                    // The Authorization header is REQUIRED. Verified: a PUT
-                    // without it returns 401, and the OPTIONS preflight fails
-                    // with 401 too. Removing it is not a workaround -- PUT is not
-                    // a CORS-simple method, so the preflight happens either way.
+                    // This replaced a cross-origin PUT that carried the App
+                    // Password. Two problems went away with it:
+                    //   * the credential no longer appears in the page source,
+                    //     where every signed-in user could read it;
+                    //   * there is no CORS preflight at all, which matters
+                    //     because a browser never sends `Authorization` on a
+                    //     preflight and Nextcloud answers that one with 401.
+                    // Chromium tolerated it; stricter engines did not.
+                    //
+                    // File bytes go browser -> proxy -> Nextcloud and never touch
+                    // Flask (AGENTS.md, rule 6).
                     const target =
-                        nextcloud.webdavBaseUrl.replace(/\/+$/, '') +
+                        nextcloud.uploadUrl.replace(/\/+$/, '') +
                         '/' +
                         encodeURIComponent(file.name);
-
-                    // Public WebDAV authenticates with the share token as the
-                    // username and an EMPTY password. No account credential is
-                    // involved, so nothing sensitive is rendered into the page.
-                    const credentials = btoa(`${nextcloud.shareToken}:`);
 
                     const response = await fetch(target, {
                         method: 'PUT',
                         headers: {
-                            Authorization: `Basic ${credentials}`,
                             'Content-Type': file.type || 'application/octet-stream',
                         },
                         body: file,
@@ -605,13 +601,14 @@
                         this.fileUrl = target;
                         this.uploadedUrl = target;
                         this.uploadMessage = 'File uploaded. You can now save the reference.';
-                    } else if (response.status === 401) {
-                        // Reached only if the token was rotated or the share was
-                        // revoked; a CORS block would not produce a readable
-                        // status at all, it would reject the promise below.
+                    } else if (response.status === 401 || response.status === 403) {
+                        // The proxy forwards this verbatim, so it is Nextcloud
+                        // rejecting the credential the proxy injected. Almost
+                        // always an expired or revoked App Password.
                         this.uploadError = true;
                         this.uploadMessage =
-                            'Nextcloud rejected the share token (HTTP 401). Check NEXTCLOUD_SHARE_TOKEN.';
+                            `The storage proxy refused the upload (HTTP ${response.status}). ` +
+                            'The Nextcloud App Password is likely expired or revoked.';
                     } else {
                         this.uploadError = true;
                         this.uploadMessage = `Nextcloud rejected the upload (HTTP ${response.status}).`;
@@ -640,22 +637,30 @@
              * this needs a real browser to observe.
              */
             diagnoseUploadFailure(error) {
-                const host = (() => {
+                // Derive the path from the configured URL, so the message points
+                // at whatever is actually in use rather than a stale literal.
+                const location = (() => {
                     try {
-                        return new URL(nextcloud.webdavBaseUrl).host;
+                        const url = new URL(nextcloud.uploadUrl);
+                        return `${url.host}${url.pathname.replace(/\/+$/, '')}`;
                     } catch {
-                        return 'the configured host';
+                        return nextcloud.uploadUrl || 'the configured upload path';
                     }
                 })();
 
                 if (error instanceof TypeError) {
+                    // A same-origin PUT has no CORS in play, so a rejected
+                    // promise means the proxy could not be reached or returned
+                    // nothing at all -- a routing or auth-injection fault rather
+                    // than a browser policy one.
                     return (
-                        'Upload blocked by the browser. Nextcloud must return ' +
-                        'Access-Control-Allow-Origin for /public.php/webdav, ' +
-                        `otherwise the response cannot be read from ${host}.`
+                        'Upload could not reach the storage proxy at ' +
+                        `${location}. Check that NEXTCLOUD_UPLOAD_PATH is ` +
+                        'routed and that the proxy injects the Nextcloud ' +
+                        'Authorization header.'
                     );
                 }
-                return `Could not reach Nextcloud at ${host}. Check the server configuration.`;
+                return `Could not reach the storage proxy at ${location}. Check the server configuration.`;
             },
         }));
     });

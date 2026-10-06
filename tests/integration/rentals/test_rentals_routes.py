@@ -442,8 +442,10 @@ class TestApartmentHub:
         body = authed_client.get(f"/rentals/apartments/{APARTMENT_ID}").get_data(
             as_text=True
         )
-        assert "cloud.example.com/public.php/webdav" in body
-        assert "RnXXJTqWbpG6s5y" in body
+        # Same-origin upload path; no Nextcloud credential is rendered.
+        assert "/nextcloud-dav/rentals" in body
+        assert "NEXTCLOUD_PASSWORD" not in body
+        assert "btoa" not in body
         assert "nextcloudConfigured" in body
 
     def test_single_x_data_root_in_the_hub(self, respx_mock, authed_client):

@@ -8,14 +8,17 @@ every button on the page is inert. That failure mode shipped once during
 development and is invisible without a browser.
 """
 
+import re
 from uuid import uuid4
 
 from playwright.sync_api import Page, Route, expect
 
-from tests.e2e.drf_stub import DEFAULT_ACCESS_TOKEN, StubResponse
+from tests.e2e.drf_stub import StubResponse
 
-NEXTCLOUD_HOST = "https://cloud.example.com"
-WEBDAV = f"{NEXTCLOUD_HOST}/public.php/webdav"
+#: The upload now targets a SAME-ORIGIN path, so this is not a cross-origin
+#: request at all and the URL is whatever host the test server runs on. Matched
+#: by path so it stays independent of the deployment's .env.
+WEBDAV = re.compile(r".*/nextcloud-dav/.*")
 
 APARTMENT_ID = uuid4()
 HOUSE_ID = uuid4()
@@ -53,7 +56,9 @@ def mock_rentals(mock_drf) -> None:
     base = "/rentals"
     mock_drf.on("GET", f"{base}/houses/", StubResponse(200, [house()]))
     mock_drf.on("GET", f"{base}/apartments/", StubResponse(200, [apartment()]))
-    mock_drf.on("GET", f"{base}/apartments/{APARTMENT_ID}/", StubResponse(200, apartment()))
+    mock_drf.on(
+        "GET", f"{base}/apartments/{APARTMENT_ID}/", StubResponse(200, apartment())
+    )
     mock_drf.on(
         "GET",
         f"{base}/apartments/{APARTMENT_ID}/payments/summary/",
@@ -70,8 +75,9 @@ def mock_rentals(mock_drf) -> None:
         ),
     )
     for suffix in ("utilities", "payments", "documents"):
-        mock_drf.on("GET", f"{base}/apartments/{APARTMENT_ID}/{suffix}/",
-                    StubResponse(200, []))
+        mock_drf.on(
+            "GET", f"{base}/apartments/{APARTMENT_ID}/{suffix}/", StubResponse(200, [])
+        )
 
 
 class TestHubBoots:
@@ -92,9 +98,11 @@ class TestHubBoots:
         errors: list[str] = []
         page.on(
             "console",
-            lambda message: errors.append(message.text)
-            if message.type in ("error", "warning")
-            else None,
+            lambda message: (
+                errors.append(message.text)
+                if message.type in ("error", "warning")
+                else None
+            ),
         )
         mock_rentals(mock_drf)
         page.goto(f"/rentals/apartments/{APARTMENT_ID}")
@@ -112,8 +120,7 @@ class TestHubBoots:
         mock_rentals(mock_drf)
         page.goto(f"/rentals/apartments/{APARTMENT_ID}")
 
-        verdict = page.evaluate(
-            """() => {
+        verdict = page.evaluate("""() => {
                 const script = Array.from(document.scripts).find(
                     (s) => !s.src && s.textContent.includes('rentalsHub')
                 );
@@ -124,8 +131,7 @@ class TestHubBoots:
                 } catch (error) {
                     return `syntax error: ${error.message}`;
                 }
-            }"""
-        )
+            }""")
         assert verdict == "ok", verdict
 
     def test_single_x_data_root(self, page: Page, authed: Page, mock_drf):
@@ -160,14 +166,14 @@ class TestDocumentUploadDiagnostics:
             # does when Nextcloud omits Access-Control-Allow-Origin.
             route.abort("accessdenied")
 
-        page.route(f"{WEBDAV}/**", handler)
+        page.route(WEBDAV, handler)
         return seen
 
     def test_cors_failure_shows_an_actionable_message(
         self, page: Page, authed: Page, mock_drf
     ):
         mock_rentals(mock_drf)
-        seen = self._block_nextcloud(page)
+        self._block_nextcloud(page)
         page.goto(f"/rentals/apartments/{APARTMENT_ID}")
 
         page.get_by_role("tab", name="Documents").click()
@@ -182,12 +188,11 @@ class TestDocumentUploadDiagnostics:
         )
 
         status = page.locator('[role="status"]').last
-        expect(status).to_contain_text("Access-Control-Allow-Origin", timeout=15000)
-        expect(status).to_contain_text("/public.php/webdav")
+        expect(status).to_contain_text("storage proxy", timeout=15000)
+        # The message must name the configured path, not a hardcoded one.
+        expect(status).to_contain_text("/nextcloud-dav/")
 
-    def test_failed_upload_never_arms_the_url(
-        self, page: Page, authed: Page, mock_drf
-    ):
+    def test_failed_upload_never_arms_the_url(self, page: Page, authed: Page, mock_drf):
         """A blocked PUT must not leave a submittable file_url behind."""
         mock_rentals(mock_drf)
         self._block_nextcloud(page)
@@ -200,18 +205,19 @@ class TestDocumentUploadDiagnostics:
             {"name": "lease.pdf", "mimeType": "application/pdf", "buffer": b"x"},
         )
         expect(page.locator('[role="status"]').last).to_contain_text(
-            "Access-Control-Allow-Origin", timeout=15000
+            "storage proxy", timeout=15000
         )
 
         assert page.locator('input[name="file_url"]').input_value() == ""
         expect(page.get_by_role("button", name="Save document")).to_be_disabled()
 
-    def test_upload_sends_the_authorization_header(
+    def test_upload_sends_no_authorization_header(
         self, page: Page, authed: Page, mock_drf
     ):
-        """The share token in the header is the only working authentication.
+        """The browser must not carry any Nextcloud credential.
 
-        Removing it would 401 both the PUT and its preflight, so this pins it.
+        The proxy injects it. A header here would put the App Password back into
+        the page source, readable by every signed-in user.
         """
         mock_rentals(mock_drf)
         seen = self._block_nextcloud(page)
@@ -224,26 +230,22 @@ class TestDocumentUploadDiagnostics:
             {"name": "lease.pdf", "mimeType": "application/pdf", "buffer": b"x"},
         )
         expect(page.locator('[role="status"]').last).to_contain_text(
-            "Access-Control-Allow-Origin", timeout=15000
+            "storage proxy", timeout=15000
         )
 
-        assert seen, "the browser never issued a Nextcloud request"
+        assert seen, "the browser never issued an upload request"
         assert seen[0]["method"] == "PUT"
-        assert seen[0]["has_authorization"], (
-            "the share token header was dropped, which would 401 the upload"
-        )
-        # The token must never travel in the path.
-        assert "/rentals" not in seen[0]["url"]
+        # The credential must be injected by the proxy, never sent by the browser.
+        assert not seen[0]["has_authorization"]
+        # The target must be the same-origin proxy path, not Nextcloud directly.
+        assert "/nextcloud-dav/" in seen[0]["url"]
 
-    def test_successful_upload_arms_the_url(
-        self, page: Page, authed: Page, mock_drf
-    ):
+    def test_successful_upload_arms_the_url(self, page: Page, authed: Page, mock_drf):
         """The happy path: a 201 unlocks Save and fills the hidden field."""
         mock_rentals(mock_drf)
         page.route(
-            f"{WEBDAV}/**",
-            lambda route: route.fulfill(status=201, content_type="text/plain",
-                                        body=""),
+            WEBDAV,
+            lambda route: route.fulfill(status=201, content_type="text/plain", body=""),
         )
         page.goto(f"/rentals/apartments/{APARTMENT_ID}")
 
@@ -257,7 +259,7 @@ class TestDocumentUploadDiagnostics:
         expect(page.locator('[role="status"]').last).to_contain_text(
             "You can now save", timeout=15000
         )
-        assert page.locator('input[name="file_url"]').input_value().endswith(
-            "lease.pdf"
+        assert (
+            page.locator('input[name="file_url"]').input_value().endswith("lease.pdf")
         )
         expect(page.get_by_role("button", name="Save document")).to_be_enabled()

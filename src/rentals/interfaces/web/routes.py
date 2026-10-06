@@ -127,31 +127,34 @@ def _current_period() -> Period:
 
 @dataclass(frozen=True, slots=True)
 class NextcloudUploadConfig:
-    """Everything the browser needs to PUT a file into the Nextcloud drop folder.
+    """Where the browser should PUT a document.
 
-    Holds no account credentials by design. Nextcloud's public-share WebDAV
-    endpoint authenticates with the share token as the username and an *empty*
-    password, so the only secret reaching the DOM is that token -- which is
-    scoped to one upload folder and revocable, unlike an account password.
+    A **same-origin path on this app**, which the reverse proxy forwards to
+    Nextcloud and authenticates with its own credentials. The browser therefore
+    sends no ``Authorization`` header at all.
+
+    This replaced sending the App Password from the browser straight to Nextcloud.
+    That had two problems, both inherent to cross-origin WebDAV rather than
+    fixable in application code:
+
+    * The credential was readable in the page source by every signed-in user.
+    * The browser never sends ``Authorization`` on a CORS preflight, and
+      Nextcloud answers that preflight with ``401``. Chromium tolerates it, so
+      the upload appeared to work; stricter engines reject it.
+
+    Same-origin removes CORS and its preflight entirely, and keeps the
+    credential out of the client altogether.
+
+    **No file bytes pass through Flask** (AGENTS.md, rule 6): the proxy streams
+    the request straight to Nextcloud.
     """
 
-    webdav_base_url: str
-    share_token: str
-
-    #: Human-readable names, used to tell an operator exactly what is missing.
-    ENV_VARS = ("NEXTCLOUD_WEBDAV_BASE_URL", "NEXTCLOUD_SHARE_TOKEN")
+    upload_path: str
 
     @property
     def missing(self) -> tuple[str, ...]:
         """Which environment variables are absent or blank."""
-        return tuple(
-            name
-            for name, value in (
-                ("NEXTCLOUD_WEBDAV_BASE_URL", self.webdav_base_url),
-                ("NEXTCLOUD_SHARE_TOKEN", self.share_token),
-            )
-            if not value.strip()
-        )
+        return ("NEXTCLOUD_UPLOAD_PATH",) if not self.upload_path.strip() else ()
 
     @property
     def configured(self) -> bool:
@@ -162,34 +165,33 @@ class NextcloudUploadConfig:
         """The operator-facing message naming the exact missing variables."""
         return (
             "Nextcloud upload is not configured. Please check "
-            f"{' and '.join(self.missing)} in .env"
+            f"{', '.join(self.missing)} in .env"
         )
 
-    def to_js_config(self) -> dict[str, object]:
+    def to_js_config(self, origin: str) -> dict[str, object]:
         """The serialisable payload handed to Alpine.
 
-        Carries `configured` so the template can disable the file input and show
-        the reason, instead of failing on the first PUT.
+        `origin` turns the relative path into the absolute URL the browser PUTs
+        to, and which is stored against the document. It is this app's own
+        origin, so the request is same-origin and no CORS applies.
         """
+        normalized_path = "/" + self.upload_path.strip().strip("/")
         return {
-            "webdavBaseUrl": self.webdav_base_url.rstrip("/"),
-            "shareToken": self.share_token,
+            "uploadUrl": f"{origin.rstrip('/')}{normalized_path}",
             "configured": self.configured,
             "missing": list(self.missing),
         }
 
 
 def _nextcloud_upload_config() -> NextcloudUploadConfig:
-    """Read the drop-folder settings from app config.
+    """Read the upload path from app config.
 
-    App config rather than ``os.environ`` inside the template, so the values are
+    App config rather than ``os.environ`` inside the template, so the value is
     injectable in tests and a missing setting renders a disabled control rather
     than an undefined JavaScript identifier.
     """
-    config = current_app.config
     return NextcloudUploadConfig(
-        webdav_base_url=str(config.get("NEXTCLOUD_WEBDAV_BASE_URL", "")),
-        share_token=str(config.get("NEXTCLOUD_SHARE_TOKEN", "")),
+        upload_path=str(current_app.config.get("NEXTCLOUD_UPLOAD_PATH", "")),
     )
 
 
@@ -365,7 +367,7 @@ async def apartment_detail(apartment_id: UUID):
         period=period,
         document_types=DOCUMENT_TYPE_LABELS,
         utility_types=UTILITY_LABELS,
-        nextcloud=_nextcloud_upload_config().to_js_config(),
+        nextcloud=_nextcloud_upload_config().to_js_config(request.host_url),
         currency=currency,
     )
 

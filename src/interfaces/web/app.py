@@ -105,21 +105,21 @@ def create_app() -> Flask:
     user_repo = DRFUserRepository(api_client)
     rentals_client = DrfRentalsClient(api_client)
 
-    # Nextcloud public-share (drop folder) upload settings.
+    # Nextcloud upload path served on THIS app's origin by the reverse proxy.
     #
-    # Deliberately no username or password. The browser PUTs straight to
-    # Nextcloud's `public.php/webdav` endpoint, where the share token acts as the
-    # username with an empty password. That keeps real account credentials out
-    # of the DOM entirely -- anything rendered into a page is readable by every
-    # user who loads it, so an account password would be exposed to all of them.
-    # A share token is scoped to one upload folder and can be rotated by
-    # revoking the share.
+    # There are deliberately no Nextcloud credentials in the application. The
+    # browser PUTs to a same-origin path and the proxy in front of Nextcloud
+    # injects the `Authorization` header from its own environment. That keeps
+    # the App Password out of the DOM -- where it was readable in the page source
+    # by every signed-in user -- removes CORS and its preflight entirely, and
+    # still routes no file bytes through Flask (AGENTS.md, rule 6).
     #
     # Read into app config rather than `os.environ` inside the template, so the
-    # values stay injectable in tests and a missing setting renders a disabled
+    # value stays injectable in tests and a missing setting renders a disabled
     # control rather than an undefined JavaScript identifier.
-    app.config["NEXTCLOUD_WEBDAV_BASE_URL"] = os.getenv("NEXTCLOUD_WEBDAV_BASE_URL", "")
-    app.config["NEXTCLOUD_SHARE_TOKEN"] = os.getenv("NEXTCLOUD_SHARE_TOKEN", "")
+    app.config["NEXTCLOUD_UPLOAD_PATH"] = os.getenv(
+        "NEXTCLOUD_UPLOAD_PATH", "/nextcloud-dav/rentals"
+    )
 
     # The shared clock is exposed on the app so views read "today" from one
     # injectable source instead of calling `date.today()` directly.

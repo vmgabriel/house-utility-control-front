@@ -144,8 +144,9 @@ def app():
     application.config.update(
         TESTING=True,
         # Public share (drop folder): a base URL and a token, no credentials.
-        NEXTCLOUD_WEBDAV_BASE_URL=("https://cloud.example.com/public.php/webdav"),
-        NEXTCLOUD_SHARE_TOKEN="RnXXJTqWbpG6s5y",
+        # A same-origin path forwarded to Nextcloud by the reverse proxy.
+        # No credential lives in the application.
+        NEXTCLOUD_UPLOAD_PATH="/nextcloud-dav/rentals",
     )
     # Rebuild the rentals use cases against the frozen clock. The extension
     # already holds a fully-wired `DrfRentalsClient`, so it is used directly --

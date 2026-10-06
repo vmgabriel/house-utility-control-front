@@ -131,42 +131,48 @@ validate the result parses as JSON before generating.
 Do **not** regenerate-and-hope. Add it to the hand-written pydantic schema and
 the mapper first, then run `make sync-api-contract` so the contract catches up.
 
-### Nextcloud document uploads (drop folder)
+### Nextcloud document uploads
 
-Documents never pass through Flask. The browser `PUT`s the file directly to a
-Nextcloud **public share** (drop folder) and submits only the resulting URL.
+Documents never pass through Flask (rule 6). The browser `PUT`s the file to a
+**same-origin path on this app** (`NEXTCLOUD_UPLOAD_PATH`, e.g.
+`/nextcloud-dav/rentals`); the reverse proxy forwards it to Nextcloud and injects
+the `Authorization` header from its own environment. `<path>/<file name>` is the
+final URL, and that is what gets stored on the document.
 
-Two facts about this flow were established by testing the live server, not by
-reading the docs, and both contradict the obvious guess:
+**This application holds no Nextcloud credentials.** There is no
+`NEXTCLOUD_USERNAME` / `NEXTCLOUD_PASSWORD` / `NEXTCLOUD_WEBDAV_BASE_URL`. The
+proxy holds them.
 
-1. **The `Authorization` header is required, and the token must not be in the
-   path.** The share authenticates as `Authorization: Basic base64(token + ":")`
-   against `<base>/<filename>`. A token in the path (`<base>/<token>/<file>`)
-   returns `401`, and so does a request with the header removed -- including its
-   `OPTIONS` preflight. Removing the header is not a CORS workaround: `PUT` is
-   not a CORS-simple method, so the preflight happens either way.
+Three previous designs were tried and abandoned. Each failure was inherent to
+cross-origin WebDAV, not a bug in application code, so read this before changing
+the flow:
 
-2. **There are no account credentials, by design.** Only
-   `NEXTCLOUD_WEBDAV_BASE_URL` and `NEXTCLOUD_SHARE_TOKEN` are configured.
-   Anything the browser sends is readable in the DOM by every user who loads the
-   page, so a real account password would be disclosed to all of them. Do not
-   reintroduce `NEXTCLOUD_USERNAME` / `NEXTCLOUD_PASSWORD`.
+1. **Public share (drop folder).** Authenticates with a share token and an empty
+   password. The token is rejected with `401` on the `OPTIONS` preflight.
+2. **Service account with the App Password sent from the browser.** Fixed the
+   `401`, but the credential was readable in the page source by every signed-in
+   user, and it still relied on CORS.
+3. **Cross-origin with CORS headers injected by the proxy.** The browser never
+   sends `Authorization` on a preflight (by design, and it cannot be made to),
+   and Nextcloud answers that preflight with `401`. Chromium tolerates it, so
+   the upload *appeared* to work; Firefox and Safari reject it. This one is a
+   portability trap rather than a clean failure, which is the worst kind.
 
-Because the upload is cross-origin, **the reverse proxy in front of Nextcloud
-must add CORS headers for `/public.php/webdav/*`** or the browser discards a
-response that actually succeeded:
+Same-origin removes CORS and the preflight entirely, so the question cannot
+arise.
 
-```apache
-Header always set Access-Control-Allow-Origin "https://<bff-origin>"
-Header always set Access-Control-Allow-Methods "PUT, OPTIONS"
-Header always set Access-Control-Allow-Headers "Authorization, Content-Type"
-```
+**`curl` cannot verify this flow.** It does not enforce CORS and does not
+preflight, so `curl` succeeding proves nothing, and `PUT` returning `201` says
+nothing about whether a browser can complete it. Use `tests/e2e/test_rentals_hub.py`,
+which drives a real browser.
 
-**`curl` cannot verify any of this.** It ignores CORS and does not preflight, so
-a curl-only check will report success while every browser fails. Verify with a
-real browser, or by sending an explicit `Origin` header and inspecting the
-response for `access-control-allow-origin`. The uploader surfaces this specific
-failure to users via `diagnoseUploadFailure` in the hub template.
+Two traps worth remembering:
+
+- **A CORS-blocked upload may still have succeeded server-side**, because the
+  browser blocks the response and not the request. A failed upload in the UI does
+  not prove the file is absent.
+- **Playwright does not surface CORS preflight requests** in its request events.
+  Absence of an `OPTIONS` in a trace is not evidence that none happened.
 
 ---
 
