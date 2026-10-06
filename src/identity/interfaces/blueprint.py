@@ -65,9 +65,11 @@ async def login() -> Response:
 
         # Persist the staff flag and user id so the nav, staff-only routes, and
         # the admin list's self-ban guard can read them without re-fetching
-        # /users/me/ on every request.
+        # /users/me/ on every request. The display name is here for the same
+        # reason: the nav's avatar dropdown renders it on every page.
         session["is_staff"] = user.is_staff
         session["user_id"] = user.id
+        session["user_name"] = user.name
 
         flash(f"Welcome back, {user.name}!", "success")
         return response
@@ -104,6 +106,9 @@ async def logout() -> Response:
     response = redirect(url_for("auth.login"))
     cookie_manager.clear_tokens(response)
     session.pop("is_staff", None)
+    # `user_name` too: leaving it behind would greet the next person to sign in
+    # on this browser with the previous one's name.
+    session.pop("user_name", None)
     flash("You have been logged out.", "info")
     return response
 

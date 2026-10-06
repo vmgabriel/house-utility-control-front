@@ -107,7 +107,11 @@
                 <span x-text="targetUserName" class="font-semibold"></span>?
                 They will no longer be able to log in.
             </p>
-            <form :action="'{{ url_for('users.admin_list') }}/' + targetUserId + '/toggle'" method="POST">
+            {# Built from the toggle route itself, not by appending the id to
+               `admin_list`'s URL. String-concatenating onto a *page* route is
+               what made this 404 the moment the page moved under /admin/list:
+               the id has to go into the route that takes one. #}
+            <form :action="'{{ url_for('users.admin_toggle_active', user_id='__USER_ID__') }}'.replace('__USER_ID__', targetUserId)" method="POST">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="is_active" value="false">
                 <div class="mb-4">

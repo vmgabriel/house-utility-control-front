@@ -59,6 +59,7 @@ from src.shared.http.auto_refresh import AutoRefreshingRepository
 from src.shared.http.drf_client import DRFAPIClient, ServiceUnavailableError
 from src.shared.infrastructure.clock import SystemClock
 from src.users.application.use_cases import (
+    GetAdminStatsUseCase,
     ListUsersUseCase,
     RegisterUserUseCase,
     ToggleUserActiveUseCase,
@@ -230,6 +231,9 @@ def create_app() -> Flask:
     app.list_users_use_case = ListUsersUseCase(repository=safe_user_repo)
     app.update_user_plan_use_case = UpdateUserPlanUseCase(repository=safe_user_repo)
     app.toggle_user_active_use_case = ToggleUserActiveUseCase(repository=safe_user_repo)
+    # Same auto-refreshing proxy as the other admin routes, so an expired token
+    # refreshes instead of logging the admin out mid-audit.
+    app.get_admin_stats_use_case = GetAdminStatsUseCase(repository=safe_user_repo)
 
     # Rentals use cases, built in their own composition root so no view ever
     # assembles one.
@@ -257,9 +261,28 @@ def create_app() -> Flask:
         # `current_user_id` lets the admin list disable the ban action on the
         # signed-in admin's own row. Like `is_staff`, it comes from the session
         # written at login so every template can read it without a DRF call.
+        #
+        # The display name is here for the nav's avatar dropdown. It falls back
+        # to "User" rather than rendering an empty label, so the initials below
+        # are always two-or-one characters and the avatar never collapses.
+        name = (session.get("user_name") or "").strip() or "User"
+        # First letter of each of the first two words: "Ana Souza" -> "AS".
+        # Falls back to "U" for a name that is somehow all whitespace.
+        initials = (
+            "".join(part[0].upper() for part in name.split()[:2] if part) or "U"
+        ).upper()
+
         return {
             "current_user_is_staff": session.get("is_staff", False),
             "current_user_id": session.get("user_id"),
+            "current_user_name": name,
+            "current_user_initials": initials,
+            # Always None today. `avatar_url` belongs to the profile context and
+            # identity cannot import profile (AGENTS.md, constraint 1), so the
+            # dropdown renders initials. The template already branches on this,
+            # so wiring an avatar later is a one-line change here -- see
+            # AGENTS.md on why it is not done now.
+            "current_user_avatar": None,
         }
 
     @app.after_request

@@ -30,6 +30,7 @@ from tests.integration.rentals.conftest import (
     reading_payload,
     summary_payload,
 )
+from tests.integration.rentals.page_html import main_content
 
 HUB = f"{BASE}/rentals/apartments/{APARTMENT_ID}"
 CSRF_MARKER = 'name="csrf_token" value="'
@@ -167,7 +168,7 @@ class TestCreateHouse:
         assert 'action="/rentals/houses"' in html
         assert "Create house" in html
         # Button and modal must share one x-data root, or the button is inert.
-        assert html.count("x-data=") == 1
+        assert main_content(html).count("x-data=") == 1
         for field in ("name", "street", "city", "state", "country"):
             assert f'name="{field}"' in html
 
@@ -281,7 +282,7 @@ class TestCreateApartment:
         assert "Add apartment" in html
         for field in ("number", "floor", "monthly_rent"):
             assert f'name="{field}"' in html
-        assert html.count("x-data=") == 1
+        assert main_content(html).count("x-data=") == 1
 
     def test_creates_an_apartment(self, respx_mock, authed_client):
         respx_mock.get(f"{BASE}/rentals/houses/").mock(
@@ -454,7 +455,7 @@ class TestApartmentHub:
         html = authed_client.get(f"/rentals/apartments/{APARTMENT_ID}").get_data(
             as_text=True
         )
-        assert html.count("x-data=") == 1
+        assert main_content(html).count("x-data=") == 1
         assert re.search(r'<div x-data="rentalsHub\(\)"', html)
 
 

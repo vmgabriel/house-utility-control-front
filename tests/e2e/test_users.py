@@ -3,7 +3,12 @@
 from playwright.sync_api import Page, expect
 
 from tests.e2e.drf_stub import DEFAULT_USER
-from tests.e2e.support import expect_path, mock_drf_login
+from tests.e2e.support import (
+    account_menu_button,
+    expect_path,
+    mock_drf_fail_user_list,
+    mock_drf_login,
+)
 
 
 def _staff_user():
@@ -71,17 +76,103 @@ class TestRegistration:
         assert mock_drf.calls("POST", "/users/auth/register/") == []
 
 
-class TestAdminAccess:
+class TestAdminDashboard:
     def test_non_staff_is_redirected(self, page: Page, authed: Page, mock_drf):
         page.goto("/users/admin")
         expect_path(page, "/dashboard/")
         expect(page.get_by_text("Access denied.")).to_be_visible()
 
-    def test_staff_sees_the_user_table(self, page: Page, mock_drf):
+    def test_non_staff_cannot_reach_the_user_table_either(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        # The guard moved onto a new route but must cover the old one too;
+        # /admin/list is a different URL and an easy one to forget.
+        page.goto("/users/admin/list")
+        expect_path(page, "/dashboard/")
+        expect(page.get_by_text("Access denied.")).to_be_visible()
+
+    def test_staff_sees_headline_counts(self, page: Page, mock_drf):
         mock_drf.seed_users(*_seed_users())
         _login_as_staff(page, mock_drf)
 
         page.goto("/users/admin")
+
+        expect(page.locator("h1")).to_have_text("Admin Dashboard")
+        # Two seeded users, both active, neither premium.
+        expect(page.get_by_test_id("stat-total")).to_have_text("2")
+        expect(page.get_by_test_id("stat-active")).to_have_text("2")
+        expect(page.get_by_test_id("stat-banned")).to_have_text("0")
+        expect(page.get_by_test_id("stat-premium")).to_have_text("0")
+
+    def test_banned_and_premium_users_are_counted_separately(
+        self, page: Page, mock_drf
+    ):
+        banned_premium = {
+            **_seed_users()[0],
+            "is_active": False,
+            "plan": "premium",
+        }
+        mock_drf.seed_users(banned_premium, _seed_users()[1])
+        _login_as_staff(page, mock_drf)
+
+        page.goto("/users/admin")
+
+        expect(page.get_by_test_id("stat-total")).to_have_text("2")
+        expect(page.get_by_test_id("stat-active")).to_have_text("1")
+        expect(page.get_by_test_id("stat-banned")).to_have_text("1")
+        expect(page.get_by_test_id("stat-premium")).to_have_text("1")
+
+    def test_counts_survive_a_failing_backend(self, page: Page, mock_drf):
+        # A reachable backend that errored is not the same claim as "no users",
+        # so the cards show dashes rather than zeroes.
+        mock_drf.seed_users(*_seed_users())
+        _login_as_staff(page, mock_drf)
+        mock_drf_fail_user_list(mock_drf)
+
+        page.goto("/users/admin")
+
+        expect(page.get_by_text("Could not load admin statistics.")).to_be_visible()
+        expect(page.get_by_test_id("stat-total")).to_have_text("-")
+        # The page still renders, so the admin can navigate onward.
+        expect(page.get_by_role("link", name="Manage Users")).to_be_visible()
+
+    def test_manage_users_button_reaches_the_table(self, page: Page, mock_drf):
+        mock_drf.seed_users(*_seed_users())
+        _login_as_staff(page, mock_drf)
+
+        page.goto("/users/admin")
+        page.get_by_role("link", name="Manage Users").click()
+
+        expect_path(page, "/users/admin/list")
+        expect(page.locator("h1")).to_have_text("User Management")
+
+    def test_account_menu_links_to_the_admin_panel(self, page: Page, mock_drf):
+        mock_drf.seed_users(*_seed_users())
+        _login_as_staff(page, mock_drf)
+        page.goto("/dashboard/")
+
+        account_menu_button(page).click()
+        page.get_by_role("link", name="Admin Panel").click()
+
+        expect_path(page, "/users/admin")
+
+    def test_admin_link_is_absent_for_non_staff(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        page.goto("/dashboard/")
+
+        account_menu_button(page).click()
+
+        expect(page.get_by_role("link", name="Settings")).to_be_visible()
+        expect(page.get_by_role("link", name="Admin Panel")).to_have_count(0)
+
+
+class TestAdminList:
+    def test_staff_sees_the_user_table(self, page: Page, mock_drf):
+        mock_drf.seed_users(*_seed_users())
+        _login_as_staff(page, mock_drf)
+
+        page.goto("/users/admin/list")
         expect(page.locator("h1")).to_have_text("User Management")
         expect(page.get_by_text("ana@example.com")).to_be_visible()
         expect(page.get_by_text("Total Users: 2")).to_be_visible()
@@ -92,7 +183,7 @@ class TestAdminActions:
         mock_drf.seed_users(*_seed_users())
         _login_as_staff(page, mock_drf)
 
-        page.goto("/users/admin")
+        page.goto("/users/admin/list")
         row = page.locator("tr", has_text="ana@example.com")
         row.locator("select[name='plan']").select_option("premium")
 
@@ -105,7 +196,7 @@ class TestAdminActions:
         mock_drf.seed_users(*_seed_users())
         _login_as_staff(page, mock_drf)
 
-        page.goto("/users/admin")
+        page.goto("/users/admin/list")
         row = page.locator("tr", has_text="ana@example.com")
         row.get_by_role("button", name="Ban User").click()
 
@@ -130,7 +221,7 @@ class TestAdminActions:
         mock_drf.seed_users(_staff_user(), *_seed_users())
         _login_as_staff(page, mock_drf)
 
-        page.goto("/users/admin")
+        page.goto("/users/admin/list")
         row = page.locator("tr", has_text="test@example.com")
         button = row.get_by_role("button", name="Ban User")
 
@@ -144,7 +235,7 @@ class TestAdminActions:
         mock_drf.seed_users(banned_user, _seed_users()[1])
         _login_as_staff(page, mock_drf)
 
-        page.goto("/users/admin")
+        page.goto("/users/admin/list")
         row = page.locator("tr", has_text="ana@example.com")
         expect(row.get_by_text("Banned")).to_be_visible()
         expect(row.get_by_text("Active", exact=True)).to_have_count(0)

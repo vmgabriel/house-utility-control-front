@@ -69,6 +69,30 @@ async def register():
 
 @users_bp.route("/admin", methods=["GET"])
 @requires_staff
+async def admin_dashboard():
+    """Admin landing page: headline counts plus a way into user management."""
+    cookie_manager: JWTCookieManager = current_app.cookie_manager
+    access_token = cookie_manager.get_access_token(request)
+    stats_uc = current_app.get_admin_stats_use_case
+
+    try:
+        stats = await stats_uc.execute(access_token)
+    except ServiceUnavailableError:
+        # No backend, so no counts. Re-raised for the branded 503 page rather
+        # than a page of dashes that reads like "zero users".
+        raise
+    except Exception:
+        stats = None
+        flash("Could not load admin statistics.", "error")
+
+    return render_template("users/admin_dashboard.html", stats=stats)
+
+
+# Under `/admin/` rather than `/admin` so it does not shadow the dashboard
+# above. Flask matches the static segment before `<user_id>`, so this stays
+# unambiguous alongside the `/admin/<user_id>/...` POST routes below.
+@users_bp.route("/admin/list", methods=["GET"])
+@requires_staff
 async def admin_list():
     cookie_manager: JWTCookieManager = current_app.cookie_manager
     access_token = cookie_manager.get_access_token(request)

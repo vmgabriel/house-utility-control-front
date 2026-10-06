@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from tests.e2e.drf_stub import (
@@ -77,6 +77,27 @@ def summary_card(page: Page, title: str):
     return page.locator("section").filter(
         has=page.get_by_role("heading", name=title, exact=True)
     )
+
+
+def account_menu_button(page: Page):
+    """The avatar/initials toggle in the nav.
+
+    Located by the initials badge rather than by a name, because the button's
+    accessible name is the user's display name and changes with the fixture
+    user. The badge is the one element in the toggle that does not.
+    """
+    return page.get_by_test_id("avatar-initials").locator("xpath=ancestor::button")
+
+
+def open_account_menu(page: Page) -> None:
+    """Open the nav account dropdown and wait for it to be usable.
+
+    Anything inside the dropdown is ``x-show``-hidden until Alpine boots, so a
+    test that clicks a menu item directly would either fail on visibility or --
+    worse -- pass against a panel Alpine had not yet bound.
+    """
+    account_menu_button(page).click()
+    expect(page.get_by_role("button", name="Logout")).to_be_visible()
 
 
 def net_balance(card):
@@ -205,6 +226,20 @@ def mock_drf_login(
             "/users/auth/login/",
             StubResponse(401, {"detail": "No active account found."}),
         )
+
+
+def mock_drf_fail_user_list(stub: StubDRFServer) -> None:
+    """Make ``GET /users/`` fail with a 500.
+
+    Models a reachable-but-unhappy backend, which is the case the admin
+    dashboard's dashed placeholders exist for. Stubs registered later win, so
+    this must be called *after* seeding.
+    """
+    stub.on(
+        "GET",
+        "/users/",
+        StubResponse(500, {"detail": "User service unavailable."}),
+    )
 
 
 def mock_drf_login_unavailable(stub: StubDRFServer) -> None:

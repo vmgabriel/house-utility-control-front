@@ -9,12 +9,14 @@ from playwright.sync_api import Page, expect
 
 from tests.e2e.drf_stub import DEFAULT_ACCESS_TOKEN, DEFAULT_REFRESH_TOKEN
 from tests.e2e.support import (
+    account_menu_button,
     expect_path,
     mock_drf_login,
     mock_drf_login_unavailable,
     mock_drf_logout,
     mock_drf_transactions_list,
     mock_drf_user_me,
+    open_account_menu,
 )
 
 #: A token that is well-formed but not signed with the Flask secret key.
@@ -207,6 +209,7 @@ class TestLogout:
         mock_drf_transactions_list(mock_drf)
         page.goto("/dashboard/")
 
+        open_account_menu(page)
         page.get_by_role("button", name="Logout").click()
 
         expect_path(page, "/auth/login")
@@ -217,6 +220,7 @@ class TestLogout:
         mock_drf_transactions_list(mock_drf)
         page.goto("/dashboard/")
 
+        open_account_menu(page)
         page.get_by_role("button", name="Logout").click()
         expect_path(page, "/auth/login")
 
@@ -231,6 +235,7 @@ class TestLogout:
         mock_drf_logout(mock_drf, success=False)
         page.goto("/dashboard/")
 
+        open_account_menu(page)
         page.get_by_role("button", name="Logout").click()
 
         # A remote failure must not trap the user in a session they asked to end.
@@ -243,6 +248,7 @@ class TestLogout:
         mock_drf_transactions_list(mock_drf)
         page.goto("/dashboard/")
 
+        open_account_menu(page)
         forge_csrf_token(page, "nav form input[name='csrf_token']")
         page.get_by_role("button", name="Logout").click()
 
@@ -256,3 +262,85 @@ class TestLogout:
         for path in ("/dashboard/", "/transactions/"):
             page.goto(path)
             expect_path(page, "/auth/login")
+
+
+class TestAccountMenu:
+    """The nav's avatar dropdown.
+
+    Worth E2E coverage specifically because Alpine.js silently ignores
+    directives outside an `x-data` scope: a toggle wired outside the scope
+    renders perfectly and does nothing, which no unit test would catch.
+    """
+
+    def test_menu_items_are_hidden_until_toggled(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        expect(page.get_by_role("button", name="Logout")).to_be_hidden()
+
+        account_menu_button(page).click()
+
+        expect(page.get_by_role("button", name="Logout")).to_be_visible()
+        expect(page.get_by_role("link", name="Settings")).to_be_visible()
+
+    def test_toggle_closes_the_menu(self, page: Page, authed: Page, mock_drf):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        account_menu_button(page).click()
+        expect(page.get_by_role("button", name="Logout")).to_be_visible()
+
+        account_menu_button(page).click()
+
+        expect(page.get_by_role("button", name="Logout")).to_be_hidden()
+
+    def test_clicking_outside_closes_the_menu(self, page: Page, authed: Page, mock_drf):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        account_menu_button(page).click()
+        expect(page.get_by_role("button", name="Logout")).to_be_visible()
+
+        # The `@click.outside` dismiss: a click well clear of the dropdown.
+        page.get_by_role("heading", name="Dashboard").click()
+
+        expect(page.get_by_role("button", name="Logout")).to_be_hidden()
+
+    def test_settings_link_reaches_the_profile(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        account_menu_button(page).click()
+        page.get_by_role("link", name="Settings").click()
+
+        expect_path(page, "/profile/")
+
+    def test_initials_come_from_the_signed_in_user(self, page: Page, mock_drf):
+        # Only a real login populates `user_name`; the `authed` fixture seeds
+        # cookies directly and skips it.
+        mock_drf_login(mock_drf)
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/auth/login")
+        fill_login_form(page, "test@example.com", "password123")
+        page.get_by_role("button", name="Sign In").click()
+        expect_path(page, "/dashboard/")
+
+        # "Test User" -> "TU". Asserted because an avatar badge that renders
+        # blank is a silent regression nothing else would catch.
+        expect(page.get_by_test_id("avatar-initials")).to_have_text("TU")
+        # Scoped to the nav: the same name also appears in the welcome flash.
+        expect(page.locator("nav").get_by_text("Test User")).to_be_visible()
+
+    def test_avatar_degrades_when_the_session_has_no_name(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        # Cookies set without a login carry no `user_name`. The badge must still
+        # render something rather than an empty circle.
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        expect(page.get_by_test_id("avatar-initials")).to_have_text("U")

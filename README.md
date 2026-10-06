@@ -142,6 +142,16 @@ Every bounded context follows the same four layers — `domain/`, `application/`
 boundaries are enforced, not merely documented: `tests/integration/test_context_boundaries.py`
 parses every import under `src/` and fails if one context reaches into another.
 
+## 🧭 Navigation & Admin
+
+The nav carries one financial link (Dashboard), Rentals, Transactions, and an account dropdown holding Settings, Admin Panel (staff only) and Logout. The dropdown is one Alpine scope owning both the toggle and the panel, so they cannot drift apart — a toggle wired outside the scope renders and silently does nothing.
+
+The admin area has two pages. `/users/admin` is the landing page: headline counts over the user list, plus the way into management. `/users/admin/list` is the table itself. Splitting them keeps the dashboard reachable at a stable URL while the table moves.
+
+The counts come from `GetAdminStatsUseCase`, which derives them from the paginated user list rather than a stats endpoint the backend does not expose. Two consequences worth knowing: totals are capped at `PAGE_SIZE` (10,000), and on a large deployment they under-report silently rather than failing. A real fix is `GET /users/stats/` on the DRF side.
+
+When the count query fails against a reachable backend, the cards show `-` rather than `0`. "No users" and "we could not count" are different claims and only one is true.
+
 Inside `interfaces/web/`, `app.py` is the composition root, `security.py` holds the response-header policy, and `templates/errors/503.html` is the outage page. It deliberately does not extend `base.html`: the error page must render with nothing but the request context available, so it cannot depend on the session, the flash queue, or the CSRF context processor — any of which might be what broke.
 
 ## ℹ️ About

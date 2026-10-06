@@ -16,6 +16,7 @@ import httpx
 
 from src.rentals.interfaces.web.routes import NextcloudUploadConfig
 from tests.integration.rentals.conftest import APARTMENT_ID
+from tests.integration.rentals.page_html import main_content
 from tests.integration.rentals.test_rentals_routes import _csrf_from, _stub_hub
 
 UPLOAD_PATH = "/nextcloud-dav/rentals"
@@ -184,8 +185,14 @@ class TestTemplateSendsNoCredentials:
             assert key not in source
 
     def test_single_x_data_root(self, respx_mock, authed_client):
+        """AGENTS.md: Alpine ignores directives outside an x-data subtree.
+
+        Scoped to <main> on purpose. The nav's account dropdown is an
+        independent x-data zone in base.html, which AGENTS.md explicitly
+        allows; counting the whole document would conflate the two.
+        """
         html = _hub_html(respx_mock, authed_client)
-        assert html.count("x-data=") == 1
+        assert main_content(html).count("x-data=") == 1
 
 
 class TestDiagnostics:

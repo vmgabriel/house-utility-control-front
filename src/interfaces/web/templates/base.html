@@ -25,19 +25,70 @@
                     </a>
                 </div>
                 <div class="hidden sm:flex items-center space-x-4">
-                    <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Dashboard</a>
-                    <a href="{{ url_for('transactions.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
+                    <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Dashboard</a>
                     <a href="{{ url_for('rentals.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Rentals</a>
-                    <a href="{{ url_for('profile.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Settings</a>
-                    {% if current_user_is_staff %}
-                    <a href="{{ url_for('users.admin_list') }}" class="text-gray-700 hover:text-purple-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded">Admin</a>
-                    {% endif %}
-                    <form action="{{ url_for('auth.logout') }}" method="POST" class="inline">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <button type="submit" class="text-gray-700 hover:text-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">
-                            Logout
-                        </button>
-                    </form>
+                    <a href="{{ url_for('transactions.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
+                </div>
+
+                <!--
+                    Account menu. One Alpine scope owns the button and the panel
+                    so the toggle and the `@click.outside` dismiss cannot drift
+                    apart; a button outside this `x-data` subtree would render
+                    and do nothing (AGENTS.md, "Alpine.js Scope Strictness").
+
+                    `x-cloak` keeps the panel out of the layout before Alpine
+                    boots, which matters here because the panel is server-rendered
+                    and would otherwise flash on every page load.
+                -->
+                <div class="relative" x-data="{ open: false }">
+                    <button type="button"
+                            @click="open = !open"
+                            @click.outside="open = false"
+                            aria-haspopup="true"
+                            :aria-expanded="open"
+                            class="flex items-center space-x-2 focus:outline-none group">
+                        {% if current_user_avatar %}
+                            <img src="{{ current_user_avatar }}" alt=""
+                                 class="w-8 h-8 rounded-full border border-gray-300 object-cover group-hover:border-blue-500 transition">
+                        {% else %}
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold text-sm border border-gray-300 group-hover:border-blue-500 transition"
+                                 data-testid="avatar-initials"
+                                 aria-hidden="true">{{ current_user_initials }}</div>
+                        {% endif %}
+                        <span class="text-gray-700 text-sm hidden sm:block">{{ current_user_name }}</span>
+                        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                    </button>
+
+                    <div x-show="open"
+                         x-cloak
+                         x-transition:enter="transition ease-out duration-200"
+                         x-transition:enter-start="opacity-0 transform scale-95"
+                         x-transition:enter-end="opacity-100 transform scale-100"
+                         x-transition:leave="transition ease-in duration-75"
+                         x-transition:leave-start="opacity-100 transform scale-100"
+                         x-transition:leave-end="opacity-0 transform scale-95"
+                         class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-50 border border-gray-200">
+                        <a href="{{ url_for('profile.index') }}"
+                           class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                            Settings
+                        </a>
+                        {% if current_user_is_staff %}
+                        <a href="{{ url_for('users.admin_dashboard') }}"
+                           class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                            Admin Panel
+                        </a>
+                        {% endif %}
+                        <div class="border-t border-gray-100 my-1"></div>
+                        <form action="{{ url_for('auth.logout') }}" method="POST">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit"
+                                    class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+                                Logout
+                            </button>
+                        </form>
+                    </div>
                 </div>
             </div>
         </div>

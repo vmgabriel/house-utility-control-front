@@ -59,6 +59,9 @@ src/
 5. **Pytest Async Isolation:** NEVER run `tests/e2e` and `tests/unit`/`tests/integration` in the same pytest process. Playwright's sync API holds the event loop, breaking `pytest-asyncio`. Use `make test-all`, which forks two processes.
 6. **No File Uploads Through the BFF:** Document bytes must never travel through Flask in production. The browser `PUT`s them to a same-origin path the reverse proxy forwards to Nextcloud. See [Nextcloud document uploads](#nextcloud-document-uploads).
 7. **Hand-Written Schemas Are Authoritative:** The mappers read the hand-written pydantic schemas (`src/<context>/infrastructure/schemas.py`), never the DRF OpenAPI schema. drf-spectacular declares several fields required and non-nullable that the live API returns as `null` (`DashboardOverview.today`/`this_week`/`this_month`, `Profile.avatar_url`/`bio`). Tightening a runtime schema to match the schema spec raises on a freshly registered user — a 500 in the dashboard mapper.
+8. **Assertions Scope To `<main>`:** Tests that count page-level markers (`x-data=`, forms, fields) must slice the rendered HTML to `<main>` first, via `tests/integration/rentals/page_html.py::main_content`. The layout in `base.html` owns interactive zones of its own — the account dropdown is an `x-data` scope, which rule 5 explicitly permits — so a whole-document count silently goes off by one whenever the layout grows. Counting the raw body would have made the rule unenforceable: it can only ever be satisfied by having no layout.
+
+   The corollary matters when writing a *new* page: two `x-data` roots inside one page body is the bug rule 5 warns about, and `main_content` is what catches it.
 
 ---
 
