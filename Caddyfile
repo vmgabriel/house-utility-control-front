@@ -1,0 +1,26 @@
+# Caddyfile
+:5000 {
+	# 1. INTERCEPTAR SUBIDAS A NEXTCLOUD
+	@nextcloud_upload path /nextcloud-dav/rentals/*
+	handle @nextcloud_upload {
+		# Quita el prefijo /nextcloud-dav/rentals de la URI
+		uri strip_prefix /nextcloud-dav/rentals
+
+		# Reconstruye la ruta que Nextcloud espera
+		rewrite * /remote.php/dav/files/bff-uploader/rentals{uri}
+
+		# Reenvía a tu Nextcloud real e inyecta la autenticación desde el .env
+		reverse_proxy https://drive.ghostlabhomecenter.work {
+			header_up Host drive.ghostlabhomecenter.work
+			header_up Authorization "Basic {env.NEXTCLOUD_BASIC_AUTH}"
+		}
+	}
+
+	# 2. ENVIAR TODO LO DEMÁS AL BFF (FLASK)
+	reverse_proxy bff:5001 {
+		header_up Host {host}
+		header_up X-Real-IP {remote}
+		header_up X-Forwarded-For {remote}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

@@ -537,4 +537,17 @@ def validate_document_url(file_url: object) -> str:
         raise InvalidDocumentError(
             "Document file_url must be an absolute URL, not a bare file path."
         )
+    # Catch an absolute URL built by concatenating one absolute URL onto
+    # another, e.g.
+    #   http://app.example/https://cloud.example/dav/lease.pdf
+    # This is syntactically a valid absolute URL -- the second `://` simply
+    # lands in the path -- so the scheme/host checks above pass it. The backend
+    # accepts it too and the link is simply dead, which is why it is rejected
+    # here with an actionable message rather than discovered by a user.
+    if "://" in remainder:
+        raise InvalidDocumentError(
+            "Document file_url looks like two URLs joined together. It should be "
+            "a single absolute URL such as "
+            "https://cloud.example/dav/lease.pdf."
+        )
     return normalized

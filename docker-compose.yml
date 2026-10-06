@@ -1,0 +1,80 @@
+# docker-compose.yml
+#
+# Deliberately minimal. The BFF talks to the DRF backend over one plain URL, so
+# there is no host-gateway mapping and no service discovery to get wrong.
+# `DRF_API_BASE_URL` decides everything:
+#
+#   * DRF as another Compose service on the same network:   <-- the default here
+#       DRF_API_BASE_URL=http://web:8000/api/v1
+#     The `bff` service joins the DRF project's network (see `networks:` at the
+#     bottom), so Compose's DNS resolves `web`. No host port publishing involved,
+#     so the API is not exposed on any host interface.
+#
+# The other two options, and why they are not the default here:
+#   * DRF on the host, BFF in a container:
+#       DRF_API_BASE_URL=http://host.docker.internal:8000/api/v1
+#     Needs DRF published on the host's bridge address, not just loopback.
+#   * DRF reached over the LAN IP:
+#       DRF_API_BASE_URL=http://192.168.x.x:8000/api/v1
+#     Works only if DRF publishes on 0.0.0.0 AND its ALLOWED_HOSTS accepts the
+#     IP. It also puts the API on every host interface, which for a DEBUG=true
+#     Django is not a trade worth making for local convenience.
+#
+# See .env.example for details.
+services:
+  # Reverse proxy. Only needed to reach the app on :5000 and to serve the
+  # Nextcloud upload path in production. Local development does not require it --
+  # run the BFF directly and use the Flask upload fallback instead.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["proxy"]
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      - NEXTCLOUD_BASIC_AUTH=${NEXTCLOUD_BASIC_AUTH:?set NEXTCLOUD_BASIC_AUTH in .env (base64 of user:app-password)}
+    depends_on:
+      - bff
+    restart: unless-stopped
+
+  # The Flask BFF.
+  bff:
+    build: .
+    ports:
+      - "5001:5001"
+    environment:
+      - FLASK_APP=src.interfaces.web.app
+      - FLASK_DEBUG=1
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-super-secret-dev-key-change-in-prod}
+      # Resolved from .env when set; the fallback is only a safety net, since a
+      # wrong default here fails as a ConnectError rather than an obvious config
+      # error. Keep the single source of truth in .env.
+      - DRF_API_BASE_URL=${DRF_API_BASE_URL:?set DRF_API_BASE_URL in .env}
+      - NEXTCLOUD_UPLOAD_PATH=${NEXTCLOUD_UPLOAD_PATH:-/nextcloud-dav/rentals}
+      # LOCAL DEV ONLY. Routes document uploads through Flask, breaking
+      # AGENTS.md rule 6. See src/rentals/interfaces/web/upload_proxy.py.
+      # MUST be false in production.
+      - NEXTCLOUD_UPLOAD_VIA_BFF=${NEXTCLOUD_UPLOAD_VIA_BFF:-false}
+      - NEXTCLOUD_BASE_URL=${NEXTCLOUD_BASE_URL:-}
+      - NEXTCLOUD_DAV_PATH=${NEXTCLOUD_DAV_PATH:-}
+      - NEXTCLOUD_BASIC_AUTH=${NEXTCLOUD_BASIC_AUTH:-}
+    volumes:
+      - ./src:/app/src:ro
+    # Joins the DRF backend's compose network so `web` resolves by service name.
+    # This is what makes the API reachable WITHOUT publishing it on the host --
+    # see the note above `DRF_API_BASE_URL`.
+    networks:
+      - default
+      - drf
+    restart: unless-stopped
+
+networks:
+  # The DRF project's network, joined rather than created. `external: true`
+  # means Docker will not create it, so this must already exist:
+  #     docker compose -p budget-tracker up -d
+  # A plain `docker compose up` here fails fast with a clear error if it does
+  # not, which is better than starting a BFF that cannot reach its backend.
+  drf:
+    external: true
+    name: budget-tracker_default

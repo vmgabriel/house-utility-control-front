@@ -174,6 +174,34 @@ Two traps worth remembering:
 - **Playwright does not surface CORS preflight requests** in its request events.
   Absence of an `OPTIONS` in a trace is not evidence that none happened.
 
+### TEMPORARY local-dev fallback: `NEXTCLOUD_UPLOAD_VIA_BFF=true`
+
+**This is the one sanctioned exception to rule 6, and it is local-dev only.**
+Production must leave the flag `false`.
+
+When the reverse proxy is the broken part of a local stack, `true` routes
+document uploads through a Flask endpoint instead
+(`src/rentals/interfaces/web/upload_proxy.py`). It buys one thing: the upload path
+stops depending on Caddy being up and correctly configured.
+
+It is worth being precise about what it does **not** buy, because the usual
+justification for this pattern is wrong. It avoids no CORS problem that the proxy
+route did not already avoid — both are same-origin from the browser's point of
+view, so neither triggers a preflight and neither needs a credential in the
+browser. A Flask hop cannot rescue a cross-origin design, because this is not
+one. What it gives up is the reason rule 6 exists: every byte crosses the BFF.
+
+Invariants that hold in **both** modes, and are asserted in
+`tests/integration/rentals/test_upload_proxy.py`:
+
+- The credential stays server-side and never reaches the browser.
+- The stored `file_url` is the same-origin path, identical either way, so a
+  document uploaded through the fallback is indistinguishable downstream.
+
+`request.files` is confined to that one module;
+`tests/integration/rentals/test_rentals_routes.py::TestNoFileUploadPathExists`
+fails if it spreads. Do not grow file handling anywhere else.
+
 ---
 
 ## ⚙️ Key Behavioral Patterns
@@ -214,12 +242,28 @@ except Exception:
 - *Rationale:* Alpine.js silently ignores directives outside of an `x-data` scope, leading to dead UI elements (e.g., buttons that do nothing).
 
 ### 6. Direct Uploads (Nextcloud)
-- Large files (documents, contracts) must NEVER be routed through the Flask BFF.
-- Always use the Nextcloud Direct Upload API flow: BFF fetches token -> Frontend uploads directly to Nextcloud -> Frontend sends file path to BFF for DB registration.
+- Large files (documents, contracts) must NEVER be routed through the Flask BFF in
+  production.
+- The browser `PUT`s the file to a **same-origin path on this app**
+  (`NEXTCLOUD_UPLOAD_PATH`). The reverse proxy streams it straight to Nextcloud and
+  injects the `Authorization` header from its own environment. The BFF only ever
+  sees the resulting URL, via `register_document`.
+- The earlier "BFF fetches a token, frontend uploads to Nextcloud" flow is
+  **abandoned** — it was cross-origin, and the browser cannot authenticate a CORS
+  preflight. See the three failed designs recorded above.
+- The single exception is `NEXTCLOUD_UPLOAD_VIA_BFF=true`, a local-dev fallback
+  documented in "TEMPORARY local-dev fallback" above. Never enable it in
+  production.
 
 ---
 
 ## 🧪 Testing Strategy
+
+- **Hermeticity (`tests/conftest.py`):** `app.py` calls `load_dotenv()` at import, so a
+  developer's gitignored `.env` would otherwise become the app's configuration
+  *during tests*. Every env-dependent setting is pinned there. A test that needs a
+  different value sets it with `monkeypatch.setenv` and builds its own app. Keep new
+  env-dependent settings added in that file.
 
 - **Unit Tests (`tests/unit/`):** Pure Python. Test domain rules (e.g., `Money` cannot be negative) and use case orchestration using `unittest.mock.AsyncMock`.
 - **Integration Tests (`tests/integration/`):** Test the infrastructure layer. Use `respx` to mock DRF HTTP responses and assert that mappers correctly translate DRF JSON to Domain Entities. `test_port_conformance.py` ensures adapters match their `Protocol` definitions exactly.

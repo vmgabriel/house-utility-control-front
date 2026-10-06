@@ -221,6 +221,13 @@ class TestSecurityHeaders:
     def test_headers_cover_every_registered_route(self, app, client):
         """Enumerate the URL map rather than a hand-kept list, so a route added
         after this test was written is covered automatically."""
+        # What counts as "rejected before reaching any business logic".
+        # `401` is here because a JSON endpoint may answer an unauthenticated
+        # call with JSON rather than redirecting to the login page -- the local
+        # upload fallback does exactly that, since its caller is `fetch()`.
+        # The assertion is about the security headers being present on whatever
+        # response comes back, not about which rejection style is used.
+        rejected = (302, 400, 401, 405)
         checked = 0
         for rule in app.url_map.iter_rules():
             if "POST" in rule.methods and rule.endpoint != "static":
@@ -228,7 +235,7 @@ class TestSecurityHeaders:
                 # either way the status is what we are checking the headers on.
                 url = self._concrete_url(rule)
                 response = client.post(url, data={})
-                assert response.status_code in (302, 400, 405), url
+                assert response.status_code in rejected, url
                 for header, value in SECURITY_HEADERS.items():
                     assert response.headers[header] == value, url
                 checked += 1

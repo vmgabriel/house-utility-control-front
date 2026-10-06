@@ -425,6 +425,10 @@
 <script>
     document.addEventListener('alpine:init', () => {
         const nextcloud = {{ nextcloud | tojson }};
+        {# Needed by the local-dev upload fallback, which authenticates with a
+           header instead of a hidden form field. `tojson` keeps it a safe JS
+           string literal. #}
+        const csrfToken = {{ csrf_token | tojson }};
         const currency = {{ currency.to_js_config() | tojson }};
 
         // Parses a user-entered decimal without letting a partial value throw.
@@ -567,51 +571,35 @@
                 this.uploadedUrl = '';
 
                 try {
-                    // Same-origin PUT to the path the reverse proxy forwards to
-                    // Nextcloud. No `Authorization` header is sent, and none is
-                    // needed: the proxy injects it from its own environment.
-                    //
-                    // This replaced a cross-origin PUT that carried the App
-                    // Password. Two problems went away with it:
-                    //   * the credential no longer appears in the page source,
-                    //     where every signed-in user could read it;
-                    //   * there is no CORS preflight at all, which matters
-                    //     because a browser never sends `Authorization` on a
-                    //     preflight and Nextcloud answers that one with 401.
-                    // Chromium tolerated it; stricter engines did not.
-                    //
-                    // File bytes go browser -> proxy -> Nextcloud and never touch
-                    // Flask (AGENTS.md, rule 6).
-                    const target =
-                        nextcloud.uploadUrl.replace(/\/+$/, '') +
-                        '/' +
-                        encodeURIComponent(file.name);
+                    const response = nextcloud.viaBff
+                        ? await this.uploadViaBff(file)
+                        : await this.uploadViaProxy(file);
 
-                    const response = await fetch(target, {
-                        method: 'PUT',
-                        headers: {
-                            'Content-Type': file.type || 'application/octet-stream',
-                        },
-                        body: file,
-                    });
-
-                    // 200/201 and 204 all mean "stored". Anything else means the
+                    // 2xx and 204 all mean "stored". Anything else means the
                     // URL must not be submitted.
                     if (response.ok) {
-                        this.fileUrl = target;
-                        this.uploadedUrl = target;
+                        const body = await response.json().catch(() => ({}));
+                        // Both modes resolve to the SAME stored URL: the
+                        // same-origin path on this app. The fallback does not
+                        // leak the Nextcloud URL into the database, so a
+                        // document uploaded either way is indistinguishable
+                        // downstream.
+                        const storedUrl = nextcloud.viaBff
+                            ? body.fileUrl
+                            : this.proxyTargetFor(file);
+                        if (!storedUrl) {
+                            this.uploadError = true;
+                            this.uploadMessage =
+                                'The upload was accepted but no URL was returned. ' +
+                                'The document was not registered.';
+                            return;
+                        }
+                        this.fileUrl = storedUrl;
+                        this.uploadedUrl = storedUrl;
                         this.uploadMessage = 'File uploaded. You can now save the reference.';
-                    } else if (response.status === 401 || response.status === 403) {
-                        // The proxy forwards this verbatim, so it is Nextcloud
-                        // rejecting the credential the proxy injected. Almost
-                        // always an expired or revoked App Password.
-                        this.uploadError = true;
-                        this.uploadMessage =
-                            `The storage proxy refused the upload (HTTP ${response.status}). ` +
-                            'The Nextcloud App Password is likely expired or revoked.';
                     } else {
                         this.uploadError = true;
-                        this.uploadMessage = `Nextcloud rejected the upload (HTTP ${response.status}).`;
+                        this.uploadMessage = await this.describeRejection(response);
                     }
                 } catch (error) {
                     this.uploadError = true;
@@ -619,6 +607,82 @@
                 } finally {
                     this.uploading = false;
                 }
+            },
+
+            /** The same-origin URL a proxy-mode upload will be stored under. */
+            proxyTargetFor(file) {
+                return (
+                    nextcloud.uploadUrl.replace(/\/+$/, '') +
+                    '/' +
+                    encodeURIComponent(file.name)
+                );
+            },
+
+            /**
+             * PRODUCTION PATH: the browser PUTs straight to the same-origin
+             * path the reverse proxy forwards to Nextcloud.
+             *
+             * No `Authorization` header is sent, and none is needed: the proxy
+             * injects it from its own environment. File bytes go
+             * browser -> proxy -> Nextcloud and never touch Flask
+             * (AGENTS.md, rule 6).
+             */
+            async uploadViaProxy(file) {
+                return fetch(this.proxyTargetFor(file), {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': file.type || 'application/octet-stream',
+                    },
+                    body: file,
+                });
+            },
+
+            /**
+             * LOCAL DEV FALLBACK: the file is POSTed to Flask, which forwards
+             * it to Nextcloud with the server-side credential.
+             *
+             * This breaks AGENTS.md rule 6 and exists only because the proxy
+             * route is the least reliable part of a local stack. It is still
+             * same-origin, so it needs no CORS handling and exposes no
+             * credential -- the only thing given up is that the bytes cross
+             * Flask. See src/rentals/interfaces/web/upload_proxy.py.
+             */
+            async uploadViaBff(file) {
+                const form = new FormData();
+                form.append('file', file, file.name);
+                return fetch(nextcloud.bffUploadPath, {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': csrfToken },
+                    body: form,
+                });
+            },
+
+            /**
+             * Turn a non-2xx into something actionable.
+             *
+             * The fallback returns JSON with a specific reason; the proxy path
+             * returns whatever Nextcloud said, with no body to read.
+             */
+            async describeRejection(response) {
+                if (nextcloud.viaBff) {
+                    try {
+                        const body = await response.json();
+                        if (body && body.error) return body.error;
+                    } catch {
+                        // Fall through to the generic message below.
+                    }
+                    return `The upload proxy rejected the file (HTTP ${response.status}).`;
+                }
+                // The proxy forwards this verbatim, so it is Nextcloud
+                // rejecting the credential the proxy injected. Almost always an
+                // expired or revoked App Password.
+                if (response.status === 401 || response.status === 403) {
+                    return (
+                        `The storage proxy refused the upload (HTTP ${response.status}). ` +
+                        'The Nextcloud App Password is likely expired or revoked.'
+                    );
+                }
+                return `Nextcloud rejected the upload (HTTP ${response.status}).`;
             },
 
             /**

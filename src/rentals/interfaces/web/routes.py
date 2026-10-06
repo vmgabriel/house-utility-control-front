@@ -12,9 +12,11 @@ that scope would silently do nothing.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from flask import (
@@ -29,7 +31,7 @@ from flask import (
 
 from src.infrastructure.auth.csrf import CSRFTokenManager
 from src.infrastructure.auth.jwt_cookie_manager import JWTCookieManager
-from src.rentals.domain.exceptions import RentalsDomainError
+from src.rentals.domain.exceptions import InvalidRentalsInputError, RentalsDomainError
 from src.rentals.domain.value_objects import (
     ApartmentId,
     DocumentType,
@@ -47,9 +49,32 @@ from src.rentals.interfaces.viewmodels import (
     PaymentSummaryViewModel,
     UtilityReadingViewModel,
 )
+from src.rentals.interfaces.web.upload_proxy import UPLOAD_PROXY_BLUEPRINT
 from src.shared.utils.currency import CurrencyPreference
 
 rentals_bp = Blueprint("rentals", __name__, url_prefix="/rentals")
+
+#: Matches a value that is unambiguously an absolute http(s) URL. Used instead of
+#: letting `urlsplit` decide, because `//host/path` is a protocol-relative URL
+#: and would otherwise have its first segment mistaken for a hostname.
+_ABSOLUTE_URL = re.compile(r"^https?://", re.IGNORECASE)
+
+#: Accepted spellings of "on" for a boolean flag. Shared with the composition
+#: root so `NEXTCLOUD_UPLOAD_VIA_BFF` means the same thing in .env and in a test.
+_TRUTHY = ("true", "1", "yes", "on")
+
+
+def _config_flag(key: str) -> bool:
+    """Read a boolean feature flag from app config.
+
+    Accepts a real `bool` (how the composition root and tests set it) as well as
+    the string forms a `.env` file can only express, so a test does not have to
+    guess which representation is in play.
+    """
+    value = current_app.config.get(key, False)
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return bool(value)
 
 
 def _access_token() -> str | None:
@@ -147,9 +172,17 @@ class NextcloudUploadConfig:
 
     **No file bytes pass through Flask** (AGENTS.md, rule 6): the proxy streams
     the request straight to Nextcloud.
+
+    `via_bff` relaxes that last point for local development only -- see
+    :mod:`src.rentals.interfaces.web.upload_proxy`, which is the single
+    documented exception to rule 6. The URL the browser ultimately stores is
+    unchanged either way, so the fallback is invisible to the rest of the app.
     """
 
     upload_path: str
+    #: Defaults to False so the production proxy path is what you get by
+    #: omission, and the rule-6 exception has to be asked for explicitly.
+    via_bff: bool = False
 
     @property
     def missing(self) -> tuple[str, ...]:
@@ -168,30 +201,92 @@ class NextcloudUploadConfig:
             f"{', '.join(self.missing)} in .env"
         )
 
-    def to_js_config(self, origin: str) -> dict[str, object]:
-        """The serialisable payload handed to Alpine.
+    def to_js_config(
+        self, origin: str, bff_upload_path: str | None = None
+    ) -> dict[str, object]:
+        """The absolute URL the browser PUTs to, and which is stored.
 
-        `origin` turns the relative path into the absolute URL the browser PUTs
-        to, and which is stored against the document. It is this app's own
-        origin, so the request is same-origin and no CORS applies.
+        `NEXTCLOUD_UPLOAD_PATH` may be written either as a **path**
+        (``/nextcloud-dav/rentals``) or as an **absolute URL**. Both are common,
+        and guessing wrong is expensive: naively prefixing the origin onto an
+        absolute URL produces
+        ``http://app/nextcloud-dav/https://cloud.example/...``, which is a
+        well-formed URL pointing nowhere and passes a naive absolute-URL check.
+
+        So the value is parsed rather than concatenated:
+
+        * a path is resolved against this app's origin;
+        * an absolute URL is accepted **only** when it is same-origin, because a
+          cross-origin target would put us straight back into the CORS preflight
+          this design exists to avoid -- and it would need a credential in the
+          browser again, which is the thing being eliminated.
+
+        Anything cross-origin raises rather than silently producing a broken
+        upload URL.
+
+        `bff_upload_path` is the Flask fallback's own path, passed in rather than
+        read from config so this pure function stays pure. It is ignored unless
+        `via_bff` is set, and falling back to `upload_path` keeps the frontend
+        working if it is ever omitted.
         """
-        normalized_path = "/" + self.upload_path.strip().strip("/")
+        raw = self.upload_path.strip()
+        if not raw:
+            # Same key set as the configured branch below, deliberately: the
+            # browser reads `nextcloud.bffUploadPath` unconditionally, and an
+            # `undefined` there would be a latent TypeError on a page that is
+            # merely unconfigured rather than broken.
+            return {
+                "uploadUrl": "",
+                "configured": False,
+                "missing": list(self.missing),
+                "viaBff": self.via_bff,
+                "bffUploadPath": bff_upload_path or "",
+            }
+
+        # Only an explicit http(s) scheme makes this a URL. Testing the scheme
+        # rather than deferring to `urlsplit` matters: `//host/path` is a
+        # protocol-relative URL, so `urlsplit` would read `host` as the netloc
+        # and silently discard it from a value the operator meant as a path.
+        if _ABSOLUTE_URL.match(raw):
+            parsed = urlsplit(raw)
+            app_origin = urlsplit(origin)
+            if parsed.netloc != app_origin.netloc:
+                raise InvalidRentalsInputError(
+                    "NEXTCLOUD_UPLOAD_PATH must be a path on this app's origin "
+                    f"({app_origin.scheme}://{app_origin.netloc}) or an absolute "
+                    f"URL on that same origin. Got a different host "
+                    f"({parsed.netloc}), which would reintroduce the cross-origin "
+                    "preflight and require a credential in the browser."
+                )
+            upload_url = raw.rstrip("/")
+        else:
+            # A path. Collapse repeated slashes, since `/a//b` and `/a/b` must
+            # resolve to the same proxy location.
+            cleaned = re.sub(r"/{2,}", "/", raw).strip("/")
+            upload_url = f"{origin.rstrip('/')}/{cleaned}"
+
         return {
-            "uploadUrl": f"{origin.rstrip('/')}{normalized_path}",
+            "uploadUrl": upload_url,
             "configured": self.configured,
             "missing": list(self.missing),
+            # In fallback mode the browser posts to Flask instead, which then
+            # forwards upstream. `uploadUrl` stays the *stored* URL in both modes
+            # so the value the backend records never changes.
+            "viaBff": self.via_bff,
+            "bffUploadPath": bff_upload_path or "",
         }
 
 
 def _nextcloud_upload_config() -> NextcloudUploadConfig:
-    """Read the upload path from app config.
+    """Read the upload configuration from app config.
 
-    App config rather than ``os.environ`` inside the template, so the value is
+    App config rather than ``os.environ`` inside the template, so the values are
     injectable in tests and a missing setting renders a disabled control rather
     than an undefined JavaScript identifier.
     """
     return NextcloudUploadConfig(
         upload_path=str(current_app.config.get("NEXTCLOUD_UPLOAD_PATH", "")),
+        via_bff=_config_flag("NEXTCLOUD_UPLOAD_VIA_BFF"),
     )
 
 
@@ -367,7 +462,20 @@ async def apartment_detail(apartment_id: UUID):
         period=period,
         document_types=DOCUMENT_TYPE_LABELS,
         utility_types=UTILITY_LABELS,
-        nextcloud=_nextcloud_upload_config().to_js_config(request.host_url),
+        nextcloud=_nextcloud_upload_config().to_js_config(
+            request.host_url,
+            # LOCAL DEV ONLY. Built with `url_for` so the fallback path cannot
+            # drift from the route the composition root actually registered, and
+            # left as None when the fallback is off -- `to_js_config` then omits
+            # it and the browser keeps using the proxy path.
+            bff_upload_path=(
+                url_for(
+                    f"{UPLOAD_PROXY_BLUEPRINT}.upload_proxy", apartment_id=identifier
+                )
+                if _config_flag("NEXTCLOUD_UPLOAD_VIA_BFF")
+                else None
+            ),
+        ),
         currency=currency,
     )
 

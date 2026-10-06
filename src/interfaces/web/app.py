@@ -50,7 +50,14 @@ from src.profile.infrastructure.repository import DRFProfileRepository
 from src.profile.interfaces.blueprint import profile_bp
 from src.rentals.application.wiring import build_rentals_use_cases
 from src.rentals.infrastructure.drf_client import DrfRentalsClient
+from src.rentals.infrastructure.nextcloud_webdav import (
+    MAX_UPLOAD_BYTES,
+)
+from src.rentals.infrastructure.nextcloud_webdav import (
+    build_client as build_nextcloud_client,
+)
 from src.rentals.interfaces.web.routes import rentals_bp
+from src.rentals.interfaces.web.upload_proxy import build_upload_proxy_blueprint
 from src.shared.infrastructure.clock import SystemClock
 from src.users.application.use_cases import (
     ListUsersUseCase,
@@ -120,6 +127,32 @@ def create_app() -> Flask:
     app.config["NEXTCLOUD_UPLOAD_PATH"] = os.getenv(
         "NEXTCLOUD_UPLOAD_PATH", "/nextcloud-dav/rentals"
     )
+
+    # LOCAL DEV ONLY. When set, documents are POSTed to a Flask route which
+    # forwards them to Nextcloud, instead of the browser PUTing straight to the
+    # reverse-proxy path. That breaks AGENTS.md rule 6 (files through the BFF),
+    # so it is off by default and confined to a single opt-in module --
+    # see `src/rentals/interfaces/web/upload_proxy.py` for why it exists and
+    # what it does not fix. Production must leave this false.
+    app.config["NEXTCLOUD_UPLOAD_VIA_BFF"] = (
+        os.getenv("NEXTCLOUD_UPLOAD_VIA_BFF", "false").lower() in TRUTHY_VALUES
+    )
+
+    # A hard ceiling on the request body, so a large upload is refused by Flask
+    # with a 413 instead of being buffered into the worker. Only relevant when
+    # the fallback above is on; the proxy path never carries a body through here.
+    if app.config["NEXTCLOUD_UPLOAD_VIA_BFF"]:
+        app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+
+    # Constructed here, the one place allowed to build concrete adapters
+    # (AGENTS.md, constraint 3). `None` when the settings are incomplete, which
+    # the view reports as "not configured" instead of raising.
+    nextcloud_client = build_nextcloud_client(
+        base_url=os.getenv("NEXTCLOUD_BASE_URL", ""),
+        dav_path=os.getenv("NEXTCLOUD_DAV_PATH", ""),
+        basic_auth=os.getenv("NEXTCLOUD_BASIC_AUTH", ""),
+    )
+    app.nextcloud_webdav_client = nextcloud_client
 
     # The shared clock is exposed on the app so views read "today" from one
     # injectable source instead of calling `date.today()` directly.
@@ -281,6 +314,13 @@ def create_app() -> Flask:
     app.register_blueprint(profile_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(rentals_bp)
+
+    # LOCAL DEV ONLY -- the rule-6 upload fallback, registered as its own
+    # blueprint and only when its flag is set. Removing this block (and the
+    # config/client setup above) removes the exception entirely; nothing else in
+    # the app knows the route exists.
+    if app.config["NEXTCLOUD_UPLOAD_VIA_BFF"]:
+        app.register_blueprint(build_upload_proxy_blueprint())
 
     # Root route
     @app.route("/")

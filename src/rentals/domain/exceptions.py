@@ -57,3 +57,22 @@ class InvalidDocumentError(RentalsDomainError):
 
 class InvalidRentalsInputError(RentalsDomainError):
     """Raised when user-supplied input fails validation before any I/O."""
+
+
+class NextcloudUploadError(RentalsDomainError):
+    """Raised when storing a document in Nextcloud did not succeed.
+
+    Carries the upstream ``status`` when Nextcloud actually answered, so a view
+    can tell an expired credential (401/403) apart from any other rejection
+    without knowing how Nextcloud reports failure. ``status`` is ``None`` when
+    the request never completed -- a DNS or TCP failure, or a timeout -- which
+    is a different operator problem with a different fix.
+
+    This exists for the local-development upload fallback only
+    (``interfaces/web/upload_proxy.py``). The production path never uploads
+    from Flask, so nothing else raises it.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status

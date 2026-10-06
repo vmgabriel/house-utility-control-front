@@ -660,28 +660,77 @@ class TestRegisterDocument:
 
 
 class TestNoFileUploadPathExists:
-    """AGENTS.md: document uploads must never route through the BFF."""
+    """AGENTS.md rule 6: document uploads must not route through the BFF.
+
+    There is exactly one documented exception --
+    `src/rentals/interfaces/web/upload_proxy.py`, a local-development fallback
+    that is off unless `NEXTCLOUD_UPLOAD_VIA_BFF` is set. The point of these
+    tests is no longer "no file handling anywhere"; it is that the exception
+    stays contained in its own module and the production path does not quietly
+    grow file handling of its own.
+    """
+
+    #: The single module allowed to touch uploaded bytes.
+    FALLBACK_MODULE = Path("src/rentals/interfaces/web/upload_proxy.py")
 
     def test_routes_module_has_no_file_handling(self):
+        """The main views stay Rule-6 clean, exception or not."""
         code = _code_only(Path("src/rentals/interfaces/web/routes.py"))
         assert "request.files" not in code
         assert "FileStorage" not in code
         assert "multipart" not in code
         assert "secure_filename" not in code
 
-    def test_client_sends_json_only(self):
-        """No rentals call can carry a file payload.
+    def test_drf_client_still_sends_json_only(self):
+        """No rentals call to the *backend* can carry a file payload.
 
         Reads code with comments stripped and matches the exact `httpx` kwargs.
         A substring check for `data=` would false-positive on the `json_data=`
         parameter name, and on prose that explains why uploads are direct.
+
+        Checked on the shared `DRFAPIClient`, which is where the single request
+        helper actually lives -- the rentals adapter only delegates to it. Both
+        are asserted so neither can grow a side channel.
         """
-        code = _code_only(Path("src/infrastructure/api/drf_client.py"))
-        assert "files=" not in code
-        assert "multipart" not in code
+        shared = _code_only(Path("src/infrastructure/api/drf_client.py"))
+        assert "files=" not in shared
+        assert "multipart" not in shared
         # The single request helper forwards JSON and query params only.
         # Whitespace-tolerant: the tokenizer round-trip re-joins tokens with
         # spaces, so `json=json_data` comes back as `json = json_data`.
-        assert re.search(r"\bjson\s*=\s*json_data\b", code)
-        assert not re.search(r"(?<![\w_])data=", code)
-        assert not re.search(r"(?<![\w_])content=", code)
+        assert re.search(r"\bjson\s*=\s*json_data\b", shared)
+        assert not re.search(r"(?<![\w_])data=", shared)
+        assert not re.search(r"(?<![\w_])content=", shared)
+
+        rentals = _code_only(Path("src/rentals/infrastructure/drf_client.py"))
+        assert "files=" not in rentals
+        assert "multipart" not in rentals
+
+    def test_only_the_fallback_module_handles_uploads(self):
+        """`request.files` must not leak out of the one exception module.
+
+        Scoped deliberately: a new module growing its own upload handling is the
+        regression this guards against, and asserting it repo-wide would just
+        re-state the rule without bounding it.
+        """
+        offenders = [
+            str(path)
+            for path in Path("src").rglob("*.py")
+            if "request.files" in _code_only(path) and path != self.FALLBACK_MODULE
+        ]
+        assert (
+            offenders == []
+        ), f"file handling escaped the fallback module: {offenders}"
+
+    def test_fallback_module_documents_its_exception(self):
+        """The exception must state why it exists, or it rots into a feature.
+
+        Reads the RAW text, not `_code_only`: this asserts on prose, which that
+        helper exists to strip.
+        """
+        text = self.FALLBACK_MODULE.read_text()
+        assert "rule 6" in text
+        assert "LOCAL DEVELOPMENT" in text
+        # It must also say what it does NOT fix, since the usual wrong
+        # justification for this pattern is a CORS claim that does not hold.
+        assert "CORS" in text

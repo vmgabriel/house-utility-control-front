@@ -59,10 +59,41 @@ class TestConfigObject:
             assert payload["uploadUrl"] == f"{ORIGIN}/nextcloud-dav/rentals"
 
     def test_js_config_carries_no_credentials(self):
+        """The JS config is an exhaustive allow-list, not a spot check.
+
+        The exact key set is asserted so a credential cannot be added to it
+        later without this test noticing. `viaBff` and `bffUploadPath` are the
+        local-dev fallback's switches: a path on this app, and a boolean. Note
+        that the fallback still sends no credential to the browser -- Flask holds
+        it -- so these two keys stay safe to expose.
+        """
         payload = NextcloudUploadConfig(UPLOAD_PATH).to_js_config(ORIGIN)
-        assert set(payload) == {"uploadUrl", "configured", "missing"}
+        assert set(payload) == {
+            "uploadUrl",
+            "configured",
+            "missing",
+            "viaBff",
+            "bffUploadPath",
+        }
         assert "username" not in payload
         assert "password" not in payload
+        # Off by default, and the fallback path empty when not in use.
+        assert payload["viaBff"] is False
+        assert payload["bffUploadPath"] == ""
+
+    def test_js_config_never_carries_the_credential(self):
+        """Neither upload mode may put the App Password in the page.
+
+        Guards the local-dev fallback specifically: it moves the upload into
+        Flask, which is exactly the kind of change that could tempt someone to
+        hand the browser the credential the proxy used to inject.
+        """
+        payload = NextcloudUploadConfig(UPLOAD_PATH, via_bff=True).to_js_config(
+            ORIGIN, bff_upload_path=f"{ORIGIN}rentals/upload-proxy"
+        )
+        serialised = repr(payload).lower()
+        for forbidden in ("basic", "authorization", "app-password", "password"):
+            assert forbidden not in serialised
 
 
 class TestAppHasNoCredentials:
