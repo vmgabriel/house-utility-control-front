@@ -1,0 +1,57 @@
+{#
+    The navbar's LLM health dot.
+
+    Its own `x-data` scope, separate from the page's. AGENTS.md's Alpine rule
+    requires one top-level scope *per template* for the page's own interactions,
+    and explicitly permits the layout to own scopes of its own -- the account
+    dropdown beside this one already is one. Nesting them inside the page scope
+    would instead mean every task page had to know about the nav's polling state.
+
+    The dot is server-rendered in its unknown state and upgraded by `fetch`, so
+    it never flashes a wrong colour: an amber "no idea yet" that settles into
+    green or red is honest about what it knows at each moment.
+
+    The endpoint is inlined into `x-init` from `url_for` rather than hardcoded,
+    so the blueprint's URL prefix stays the single source of truth.
+#}
+<div x-data="{
+            health: { available: false, unknown: true, detail: '', glyph: '🟡', label: 'IA: comprobando…' },
+            url: '',
+            async refresh() {
+                try {
+                    const response = await fetch(this.url, {
+                        headers: { Accept: 'application/json' },
+                        credentials: 'same-origin'
+                    });
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    this.health = await response.json();
+                } catch (error) {
+                    // The request itself failed, which is not the same as the
+                    // provider being down -- hence `unknown`, and the amber dot.
+                    this.health = {
+                        available: false,
+                        unknown: true,
+                        detail: 'No se pudo comprobar el servicio de IA.',
+                        glyph: '🟡',
+                        label: 'IA: estado desconocido'
+                    };
+                }
+            }
+         }"
+     {#
+         The endpoint is a data attribute lifted into the scope by `x-init`,
+         not interpolated into the `x-data` body -- that body is a JavaScript
+         expression, and `test_user_data_is_not_interpolated_into_javascript`
+         requires anything put there to be argued for first. See the same note in
+         `tasks/backlog.html`.
+     #}
+     data-health-url="{{ url_for('tasks.llm_health') }}"
+     x-init="url = $el.dataset.healthUrl; refresh()"
+     class="hidden md:flex items-center gap-1 px-2 py-1 text-xs text-gray-600"
+     :title="health.label + (health.detail ? ' — ' + health.detail : '')"
+     :aria-label="health.label"
+     role="status"
+     aria-live="polite">
+    <span aria-hidden="true" x-text="health.glyph" data-testid="llm-health-glyph"></span>
+    <span class="sr-only" x-text="health.label"></span>
+</div>

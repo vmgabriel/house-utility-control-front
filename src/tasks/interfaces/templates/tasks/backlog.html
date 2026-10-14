@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}Tasks &middot; Budget Tracker{% endblock %}
+
+{% block content %}
+{#
+    ONE top-level x-data scope owns everything interactive on this page: the
+    Create Task button and its modal, and the per-row Decompose buttons.
+
+    They share a scope deliberately rather than each row getting its own. The
+    decompose buttons all mutate the same list, so a single `pending` map keyed by
+    task id is what lets two buttons on two different rows show their own spinner
+    without the page growing one scope per task. A second `x-data` inside this
+    one is the bug AGENTS.md's Alpine rule warns about, so there is none.
+
+    The descriptions are rendered by `gFm.render`, which is the page's Markdown
+    surface. Nothing here is interpolated into `x-html` unsanitised -- see
+    `_markdown.html` for why DOMPurify is not optional.
+#}
+<div x-data="{
+            csrfToken: '',
+            decomposeBase: '',
+            showCreateModal: false,
+            // Task id -> true while its decompose request is in flight. A map
+            // rather than one boolean because two rows can be decomposing at
+            // once, and a single flag would grey out the wrong button.
+            pending: {},
+            decomposing: false,
+            message: '',
+            messageOk: true,
+            async decompose(taskId, event) {
+                event.preventDefault();
+                if (this.pending[taskId]) return;
+                this.pending[taskId] = true;
+                try {
+                    const response = await fetch(this.decomposeUrl(taskId), {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                            'X-Requested-With': 'fetch',
+                            'X-CSRF-Token': this.csrfToken
+                        }
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    this.message = data.message || 'No se pudo encolar la descomposición.';
+                    this.messageOk = Boolean(data.ok);
+                } catch (error) {
+                    this.message = 'No se pudo contactar al servidor.';
+                    this.messageOk = false;
+                } finally {
+                    this.pending[taskId] = false;
+                }
+            },
+            decomposeUrl(taskId) {
+                return this.decomposeBase.replace('__TASK_ID__', taskId);
+            }
+         }"
+     {#
+         The URL and the CSRF token arrive as data attributes and are lifted into
+         the scope from `x-init`, where `$el` is the element being initialised.
+
+         Interpolating them into the `x-data` body instead would be shorter, and
+         `tests/integration/web/test_security.py` refuses it: that body is a
+         JavaScript expression, so anything a user could ever reach into one has
+         to be argued for in that test's allowlist rather than dropped in. Two
+         characters of verbosity is a fair price for a boundary that holds.
+     #}
+     data-decompose-base="{{ url_for('tasks.decompose_task', task_id='__TASK_ID__') }}"
+     data-csrf-token="{{ csrf_token }}"
+     x-init="csrfToken = $el.dataset.csrfToken; decomposeBase = $el.dataset.decomposeBase"
+     class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    {# ---------------------------------------------------------------- #}
+    {# Header                                                          #}
+    {# ---------------------------------------------------------------- #}
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Backlog</h1>
+            <p class="mt-1 text-sm text-gray-600">
+                {{ backlog.tasks|length }} open task{{ '' if backlog.tasks|length == 1 else 's' }}
+                {%- if backlog.overwhelmed_count %}
+                    &middot; <span class="text-amber-700 font-medium">{{ backlog.overwhelmed_count }} too large</span>
+                {%- endif %}
+                {%- if backlog.overdue_count %}
+                    &middot; <span class="text-red-700 font-medium">{{ backlog.overdue_count }} overdue</span>
+                {%- endif %}
+            </p>
+        </div>
+        <div class="flex items-center gap-2">
+            <a href="{{ url_for('tasks.daily') }}"
+               class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Daily plan
+            </a>
+            <a href="{{ url_for('tasks.goals') }}"
+               class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Goals
+            </a>
+            <button type="button" @click="showCreateModal = true"
+                    class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Create task
+            </button>
+        </div>
+    </div>
+
+    {# Result of the last decompose call. `x-cloak` keeps it out of the layout
+       before Alpine boots, and `role="status"` announces it to a screen reader
+       without stealing focus -- the redirect is not available here because the
+       fetch path deliberately does not reload the page. #}
+    <div x-show="message" x-cloak x-transition.opacity role="status" aria-live="polite"
+         :class="messageOk ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'"
+         class="p-3 mb-4 rounded-lg text-sm">
+        <span x-text="message"></span>
+    </div>
+
+    {# ---------------------------------------------------------------- #}
+    {# Task list                                                       #}
+    {# ---------------------------------------------------------------- #}
+    {% if backlog.is_empty %}
+        <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300">
+            <p class="text-gray-600">Nothing in the backlog.</p>
+            <p class="mt-1 text-sm text-gray-500">
+                Use <span class="font-medium">Create task</span> to add your first task.
+            </p>
+        </div>
+    {% else %}
+        <ul class="space-y-3" data-testid="task-list">
+            {% for task in backlog.tasks %}
+            <li class="p-4 bg-white rounded-lg shadow-sm border {{ task.badge_class }}"
+                data-testid="task-row" data-task-id="{{ task.id }}">
+
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <h2 class="font-semibold text-gray-900">{{ task.name }}</h2>
+
+                            {# The overwhelmed badge. Shown when the backend's own
+                               verdict says so, or -- when the backend did not send
+                               one -- when the estimate exceeds the configured
+                               threshold. `TaskViewModel.is_overwhelmed` has
+                               already applied that precedence. #}
+                            {% if task.is_overwhelmed %}
+                            <span data-testid="overwhelmed-badge"
+                                  class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800">
+                                &#9888;&#65039; Tarea grande
+                            </span>
+                            {% endif %}
+
+                            {% if task.is_overdue %}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-800">
+                                Vencida
+                            </span>
+                            {% endif %}
+
+                            {% if task.is_done %}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full {{ task.status_style }}">
+                                {{ task.status_label }}
+                            </span>
+                            {% endif %}
+
+                            {% if task.llm_evaluation_failed %}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-yellow-100 text-yellow-800"
+                                  title="The last AI evaluation failed. This task has not been assessed.">
+                                AI: error
+                            </span>
+                            {% elif task.is_checked_by_llm %}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-purple-100 text-purple-800">
+                                AI: revisada
+                            </span>
+                            {% endif %}
+                        </div>
+
+                        {# Markdown. `gFm.render` sanitises, which is what makes `innerHTML` safe
+                           here -- see `_markdown.html`. No `x-data` on this node:
+                           `x-init` alone runs inside the page's existing scope,
+                           and a bare `x-data` would open a second root inside
+                           one page body for a node that owns no state
+                           (AGENTS.md, rule 5). #}
+                        {% if task.has_description %}
+                        <div class="mt-2 text-sm text-gray-700 prose prose-sm max-w-none"
+                             x-init="$el.innerHTML = window.gFm.render($el.dataset.markdown)"
+                             data-markdown="{{ task.description_markdown }}">
+                            {{ task.description_preview }}
+                        </div>
+                        {% endif %}
+
+                        <dl class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+                            <div class="flex items-center gap-1">
+                                <dt class="sr-only">Priority</dt>
+                                <dd><span class="inline-block px-2 py-0.5 rounded-full {{ task.priority_style }}">{{ task.priority_label }}</span></dd>
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <dt>Importance</dt>
+                                <dd>
+                                    <div class="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden"
+                                         role="img"
+                                         aria-label="Importance {{ task.importance.label }}">
+                                        <div class="h-full bg-blue-500 {{ task.importance.dots_class }}"></div>
+                                    </div>
+                                    <span class="sr-only">{{ task.importance.label }}</span>
+                                </dd>
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <dt>Estimate</dt>
+                                <dd>{{ task.estimated_hours_label }}</dd>
+                            </div>
+                            {% if task.due_date %}
+                            <div class="flex items-center gap-1">
+                                <dt>Due</dt>
+                                <dd><time datetime="{{ task.due_date }}">{{ task.due_date }}</time></dd>
+                            </div>
+                            {% endif %}
+                        </dl>
+                    </div>
+
+                    {# Action column. Only the decompose button is here: the
+                       evaluate action exists in the API and has a route, but it
+                       has no button because the user has nothing to do with its
+                       result beyond a badge that appears on the next load. A
+                       second identical-looking button on the same row would
+                       invite the question of which one to press.
+
+                       `type="button"`, not a submit: the request goes through
+                       `fetch` so the button can show a pending state and the
+                       page does not reload. That does mean this one action needs
+                       JavaScript -- accepted, because the alternative is a
+                       button that reloads the page on every click for an
+                       operation whose result is by definition not visible until
+                       the reload anyway. #}
+                    <div class="flex items-center gap-2">
+                        {% if task.is_overwhelmed %}
+                        <button type="button"
+                                data-testid="decompose-button"
+                                @click="decompose('{{ task.id }}', $event)"
+                                :disabled="pending['{{ task.id }}']"
+                                :class="pending['{{ task.id }}'] ? 'opacity-50 cursor-not-allowed' : ''"
+                                class="px-3 py-2 text-xs font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500">
+                            <span x-show="!pending['{{ task.id }}']">Descomponer con IA</span>
+                            <span x-show="pending['{{ task.id }}']" x-cloak>Encolando…</span>
+                        </button>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+
+    {# ---------------------------------------------------------------- #}
+    {# Modal: create a task                                            #}
+    {#                                                                     #}
+    {# No owner field: the backend derives ownership from the JWT, so    #}
+    {# sending one would be ignored.                                    #}
+    {# ---------------------------------------------------------------- #}
+    <div x-show="showCreateModal" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="showCreateModal = false" role="dialog" aria-modal="true"
+         aria-labelledby="create-task-title">
+        <div class="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl max-h-[90vh] overflow-y-auto"
+             @click.outside="showCreateModal = false">
+            <h3 id="create-task-title" class="text-lg font-semibold text-gray-900">Create a task</h3>
+
+            <form action="{{ url_for('tasks.create_task') }}" method="POST"
+                  class="mt-4 grid gap-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Name</span>
+                    <input type="text" name="name" required maxlength="200"
+                           placeholder="Draft the quarterly report"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Description</span>
+                    <textarea name="description" rows="4" maxlength="5000"
+                              placeholder="Markdown is supported: **bold**, lists, links."
+                              class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                    <span class="mt-1 block text-xs text-gray-500">
+                        Markdown. Rendered when the task is saved.
+                    </span>
+                </label>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Goal</span>
+                        <select name="goal_id"
+                                class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="">No goal</option>
+                            {% for goal_id, goal_name in backlog.goal_options %}
+                            <option value="{{ goal_id }}">{{ goal_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Due date</span>
+                        <input type="date" name="due_date" value=""
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Priority</span>
+                        <select name="priority"
+                                class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            {% for value, label in priorities %}
+                            <option value="{{ value }}" {% if value == 'medium' %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Importance</span>
+                        <select name="importance"
+                                class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            {% for level in range(1, 6) %}
+                            <option value="{{ level }}">{{ level }} of 5</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                </div>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Estimated hours</span>
+                    <input type="number" name="estimated_hours" step="0.25" min="0" max="24"
+                           placeholder="1.5"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <span class="mt-1 block text-xs text-gray-500">
+                        Leave empty if you have not estimated it. Above
+                        {{ backlog.overwhelm_threshold }}h the task is flagged as large.
+                    </span>
+                </label>
+
+                <div class="flex justify-end gap-3 pt-2">
+                    <button type="button" @click="showCreateModal = false"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Create task
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

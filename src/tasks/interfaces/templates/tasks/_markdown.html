@@ -1,0 +1,54 @@
+{#
+    The markdown renderer, shared by every page that shows a description.
+
+    Loaded once from `base.html`, before Alpine boots, so the helper exists by
+    the time the first `x-html` expression is evaluated.
+
+    **Why `DOMPurify` is not optional.** `marked` is a CommonMark *parser* and
+    does not sanitise its output; its own documentation says so. A description is
+    text the user typed, and a user can paste anything into their own text box,
+    including `<img src=x onerror=...>`. Parsing that with `marked` and injecting
+    it with `x-html` is stored XSS as soon as anyone else can see the text -- a
+    shared goal's description, a subtask inherited from a decomposed task.
+    `DOMPurify.sanitize` is what closes it.
+
+    The alternative, sanitising in the BFF, was rejected for the reasons recorded
+    in `src/tasks/interfaces/viewmodels.py`: it puts a second CommonMark
+    implementation in the request path, and any hand-rolled tag stripper is one
+    regex away from missing something.
+
+    Both globals are checked before use. If the CDN is blocked or offline, the
+    raw text is escaped and shown as-is -- a plain description is far more
+    useful than an empty box, and the failure is visible rather than silent.
+#}
+<script>
+    // `gFm` renders one markdown string to sanitised HTML.
+    window.gFm = (function () {
+        const escapeHtml = (text) => {
+            const div = document.createElement('div');
+            div.textContent = text == null ? '' : String(text);
+            return div.innerHTML;
+        };
+
+        return {
+            render(markdown) {
+                if (!markdown) return '';
+                // `breaks` so a single newline in a description is a line break,
+                // which is what someone typing a quick note into a one-line-ish
+                // textarea expects. Without it their list silently joins up.
+                const html = window.marked.parse(markdown, { breaks: true, gfm: true });
+                if (window.DOMPurify && window.DOMPurify.sanitize) {
+                    return window.DOMPurify.sanitize(html);
+                }
+                return escapeHtml(markdown);
+            },
+            // The plain-text form, for tooltips and truncated rows. Strips the
+            // markdown syntax instead of escaping it, because a tooltip reading
+            // "**urgent** fix" is noise in a way escaped HTML in a `title` is not.
+            plain(markdown) {
+                if (!markdown) return '';
+                return String(markdown).replace(/[#*_`>[\]()!-]/g, ' ').replace(/\s+/g, ' ').trim();
+            }
+        };
+    })();
+</script>

@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Daily plan &middot; Budget Tracker{% endblock %}
+
+{% block content %}
+{#
+    ONE top-level x-data scope. It owns only the date stepper -- the day's tasks
+    are rendered server-side and need no client state.
+
+    There is deliberately no second scope for the task rows. A plan's rows are
+    read-only on this page: changing a task's status is a backlog action, and
+    duplicating it here would mean two places to fix when the backend's status
+    transitions change.
+#}
+<div x-data="{}" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    {# ---------------------------------------------------------------- #}
+    {# Header and date stepper                                          #}
+    {# ---------------------------------------------------------------- #}
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Daily plan</h1>
+            <p class="mt-1 text-sm text-gray-600">
+                <time datetime="{{ selected_date }}">{{ selected_date }}</time>
+                {%- if selected_date == today %} (today){% endif %}
+            </p>
+        </div>
+        <div class="flex items-center gap-2">
+            <a href="{{ url_for('tasks.daily') }}"
+               class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Today
+            </a>
+            <a href="{{ url_for('tasks.backlog') }}"
+               class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Backlog
+            </a>
+            <a href="{{ url_for('tasks.goals') }}"
+               class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Goals
+            </a>
+        </div>
+    </div>
+
+    <form method="GET" action="{{ url_for('tasks.daily') }}"
+          class="mb-6 flex flex-wrap items-end gap-3">
+        <label class="block">
+            <span class="text-sm font-medium text-gray-700">Plan for</span>
+            <input type="date" name="date" value="{{ selected_date }}"
+                   class="mt-1 px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </label>
+        <button type="submit"
+                class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Show plan
+        </button>
+    </form>
+
+    {% if plan is none %}
+        {# No plan for this day. This is a normal state, not an error: a day is
+           unplanned until someone asks the AI to build one, so the page offers
+           the backlog rather than an apology. #}
+        <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300"
+             data-testid="empty-daily-plan">
+            <p class="text-gray-600">No plan for {{ empty.plan_date }}.</p>
+            <p class="mt-1 text-sm text-gray-500">
+                Add tasks from the backlog and ask the AI to build a plan for the day.
+            </p>
+            <a href="{{ url_for('tasks.backlog') }}"
+               class="mt-4 inline-block px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Go to the backlog
+            </a>
+        </div>
+    {% else %}
+        {# ---------------------------------------------------------------- #}
+        {# Hours bar                                                      #}
+        {#                                                                     #}
+        {# The width is a clamped 0-100 percentage (see the ViewModel) so a  #}
+        {# badly over-committed day cannot push the fill off the card. The   #}
+        {# colour changes at the limit, not above the fill.                  #}
+        {# ---------------------------------------------------------------- #}
+        <div class="p-4 mb-6 bg-white rounded-lg shadow-sm border border-gray-200"
+             data-testid="daily-plan-summary">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+                <h2 class="font-semibold text-gray-900">
+                    {{ plan.total_hours_label }} planned
+                    <span class="text-sm font-normal text-gray-500">of {{ plan.max_hours_label }}</span>
+                </h2>
+                <p class="text-sm {% if plan.is_over_committed %}text-red-700 font-medium{% else %}text-gray-600{% endif %}">
+                    {{ plan.remaining_label }}
+                </p>
+            </div>
+
+            <div class="mt-3 h-2.5 bg-gray-200 rounded-full overflow-hidden"
+                 role="progressbar"
+                 aria-valuemin="0"
+                 aria-valuemax="100"
+                 aria-valuenow="{{ plan.fill_percent }}"
+                 aria-label="Hours planned against the daily budget">
+                <div class="h-full {{ plan.bar_class }} transition-all"
+                     style="width: {{ plan.fill_percent }}%"></div>
+            </div>
+
+            {% if plan.generated_by_llm %}
+            <p class="mt-2 text-xs text-purple-700">Built by the AI.</p>
+            {% endif %}
+        </div>
+
+        {# ---------------------------------------------------------------- #}
+        {# The day's tasks, in the order the plan listed them               #}
+        {# ---------------------------------------------------------------- #}
+        {% if tasks %}
+        <ul class="space-y-3" data-testid="daily-task-list">
+            {% for task in tasks %}
+            <li class="p-4 bg-white rounded-lg shadow-sm border {{ task.badge_class }}"
+                data-testid="daily-task-row">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            {# Status indicator. A filled circle for done, a ring
+                               for the rest -- decorative, so the text status
+                               below carries the real meaning for anyone who
+                               cannot see the shape. #}
+                            <span aria-hidden="true"
+                                  class="inline-flex items-center justify-center w-5 h-5 rounded-full border-2 {% if task.is_done %}bg-green-500 border-green-500 text-white{% else %}border-gray-300{% endif %} text-xs font-bold">
+                                {%- if task.is_done %}&#10003;{% endif -%}
+                            </span>
+                            <h3 class="font-medium {% if task.is_done %}line-through text-gray-400{% else %}text-gray-900{% endif %}">
+                                {{ task.name }}
+                            </h3>
+                            {% if task.is_overwhelmed %}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800">
+                                &#9888;&#65039; Tarea grande
+                            </span>
+                            {% endif %}
+                        </div>
+
+                        <p class="mt-1 ml-7 text-xs text-gray-500">
+                            {{ task.status_label }}
+                            {%- if task.estimated_hours_label != '—' %}
+                                &middot; {{ task.estimated_hours_label }}
+                            {%- endif %}
+                            {%- if task.due_date %}
+                                &middot; due <time datetime="{{ task.due_date }}">{{ task.due_date }}</time>
+                            {%- endif %}
+                        </p>
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+            <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300">
+                <p class="text-gray-600">This plan has no tasks.</p>
+            </div>
+        {% endif %}
+
+        {# A task in the plan that the backlog no longer returns -- completed
+           since the plan was built, or deleted. Dropping it silently would make
+           the hours bar disagree with the rows above it with nothing to explain
+           the gap. #}
+        {% if missing_task_count %}
+        <p class="mt-4 text-xs text-gray-500">
+            {{ missing_task_count }} task{{ '' if missing_task_count == 1 else 's' }} on this plan
+            {{ 'is' if missing_task_count == 1 else 'are' }} no longer in the backlog and {{ 'is' if missing_task_count == 1 else 'are' }} not listed.
+        </p>
+        {% endif %}
+    {% endif %}
+</div>
+{% endblock %}
