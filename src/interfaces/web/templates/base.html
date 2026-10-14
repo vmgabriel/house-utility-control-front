@@ -5,6 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Budget Tracker{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
+
+    {#
+        Markdown rendering for task and goal descriptions.
+
+        `marked` is the parser; `DOMPurify` is what makes the result safe to
+        inject. They are separate because `marked` does not sanitise -- a
+        description is text the user typed, and `x-html` runs it as markup, so
+        without the second script every description on the page is an XSS sink.
+        The rationale, and the fallback when a CDN is unreachable, are in
+        `tasks/_markdown.html`.
+
+        Pinned rather than `@latest`, like Alpine above: an unpinned dependency
+        on a page that renders untrusted text is a supply-chain wildcard.
+    #}
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+    {% include "tasks/_markdown.html" %}
+
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
@@ -39,6 +57,12 @@
                            pointing straight at it would be redundant. #}
                         <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
                         <a href="{{ url_for('rentals.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Rentals</a>
+                        <a href="{{ url_for('tasks.backlog') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Tasks</a>
+
+                        {# The LLM health dot: a layout-owned Alpine scope, like the
+                           account menu below. See `_llm_health.html`. Hidden below
+                           `md` because it is a status decoration. #}
+                        {% include "tasks/_llm_health.html" %}
                     </div>
 
                     <!--
