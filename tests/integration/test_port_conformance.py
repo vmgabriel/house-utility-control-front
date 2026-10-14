@@ -23,11 +23,18 @@ from src.budget.infrastructure.repositories.transaction_repository import (
 )
 from src.identity.domain.ports import AuthRepositoryPort
 from src.identity.infrastructure.repository import DRFAuthRepository
+from src.tasks.application.ports import TasksApiClient
+from src.tasks.infrastructure.drf_client import DrfTasksClient
 
 PAIRS = [
     (AuthRepositoryPort, DRFAuthRepository),
     (TransactionRepositoryPort, DRFTransactionRepository),
     (DashboardRepositoryPort, DRFDashboardRepository),
+    # The tasks adapter goes through the same positional-token contract as every
+    # other one, because `AutoRefreshingRepository` substitutes a refreshed JWT
+    # into `args[0]`. That makes the parameter *order* load-bearing here, which
+    # is exactly what the signature comparison below checks.
+    (TasksApiClient, DrfTasksClient),
 ]
 
 
