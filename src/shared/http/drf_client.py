@@ -523,3 +523,162 @@ class DRFAPIClient:
             if isinstance(summaries, list):
                 return summaries
         return []
+
+    # ------------------------------------------------------------------ #
+    # Tasks, goals, and daily plans
+    #
+    # One method per endpoint, mirroring the rentals block above. These are the
+    # only place a tasks URL is written; the adapter in `src/tasks/infrastructure`
+    # never builds a path of its own, so a rename here cannot leave half the
+    # context still pointing at the old route.
+    # ------------------------------------------------------------------ #
+    async def list_tasks(self, access_token: str) -> Any:
+        """List the caller's backlog (not-done tasks, backend-ordered)."""
+        status, body = await self._request(
+            "GET", "/tasks/tasks/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list tasks", status_code=status, detail=body
+            )
+        return body
+
+    async def get_task(self, access_token: str, task_id: str) -> Any:
+        status, body = await self._request(
+            "GET", f"/tasks/tasks/{task_id}/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch task", status_code=status, detail=body
+            )
+        return body
+
+    async def create_task(self, access_token: str, payload: dict) -> Any:
+        status, body = await self._request(
+            "POST", "/tasks/tasks/", access_token=access_token, json_data=payload
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status in (400, 409):
+            raise ValidationError(
+                "Task validation failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to create task", status_code=status, detail=body
+            )
+        return body
+
+    async def list_goals(self, access_token: str) -> Any:
+        status, body = await self._request(
+            "GET", "/tasks/goals/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list goals", status_code=status, detail=body
+            )
+        return body
+
+    async def list_daily_plans(self, access_token: str) -> Any:
+        """Every daily plan the caller has, newest first.
+
+        The date is a query parameter on the same endpoint rather than a path
+        segment, so the list is fetched whole and filtered client-side. That
+        looks wasteful for one day and is not: the daily view also wants the
+        previous and next day for the date stepper, and three filtered round
+        trips to render one page is worse than one unfiltered one.
+        """
+        status, body = await self._request(
+            "GET", "/tasks/daily-plans/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list daily plans", status_code=status, detail=body
+            )
+        return body
+
+    async def get_llm_health(self, access_token: str) -> Any:
+        """Report whether the LLM provider behind the backend is reachable.
+
+        Deliberately separate from the two trigger endpoints rather than derived
+        from their failures: the navbar indicator polls this on every page load,
+        including pages where the user has never touched an LLM feature, so it
+        has to be a cheap question with a cheap answer.
+
+        Note the path is a *literal* segment under `/tasks/tasks/`. DRF resolves
+        it before any `<uuid:pk>` converter on a sibling detail route, so
+        `llm-health` cannot be captured as a task id -- but only because it is
+        matched first. A task detail route written to match any string would
+        swallow it.
+        """
+        status, body = await self._request(
+            "GET", "/tasks/tasks/llm-health/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            # 503 included: a health probe that "fails" is the normal way this
+            # endpoint reports an unreachable provider, so it must not be an
+            # exception the caller has to special-case.
+            raise DRFAPIClientError(
+                "LLM health check failed", status_code=status, detail=body
+            )
+        return body
+
+    async def evaluate_task(self, access_token: str, task_id: str) -> Any:
+        """Queue the LLM evaluation for one task.
+
+        Returns ``None`` for the backend's empty 202 body, which is the honest
+        reading: the work has been queued and there is no result to hand back.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/tasks/tasks/{task_id}/evaluate/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Cannot evaluate this task", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to trigger task evaluation", status_code=status, detail=body
+            )
+        return body
+
+    async def decompose_task(self, access_token: str, task_id: str) -> Any:
+        """Queue the LLM decomposition of one task into subtasks."""
+        status, body = await self._request(
+            "POST",
+            f"/tasks/tasks/{task_id}/decompose/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Cannot decompose this task", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to trigger task decomposition", status_code=status, detail=body
+            )
+        return body
