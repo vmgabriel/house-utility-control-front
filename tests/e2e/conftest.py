@@ -7,10 +7,13 @@ Three pieces of infrastructure make the E2E suite deterministic:
    See ``drf_stub`` for why Playwright route interception cannot be used here.
 2. ``live_server`` -- the real Flask app, served by Werkzeug on a background
    thread, with ``DRF_API_BASE_URL`` pointed at the stub.
-3. ``offline_assets`` -- Alpine.js is served from ``tests/e2e/vendor`` and
-   Tailwind's CDN script is stubbed out, so no test depends on a third-party
-   CDN being reachable. Alpine is the one dependency that changes behaviour:
-   it is what reveals the create-transaction modal and the dashboard cards.
+3. ``offline_assets`` -- Alpine.js, ``marked``, and ``DOMPurify`` are served
+   from ``tests/e2e/vendor`` and Tailwind's CDN script is stubbed out, so no
+   test depends on a third-party CDN being reachable. Alpine is the one
+   dependency that changes behaviour: it is what reveals the create-transaction
+   modal and the dashboard cards. The two markdown libraries matter for a
+   subtler reason -- a description only renders when the sanitiser is present,
+   so serving them for real is what keeps that fallback from going untested.
 
 The browser fixtures are defined here rather than taken from ``pytest-playwright``
 because that plugin wraps ``pytest_runtest_call`` for *every* test in the
@@ -39,9 +42,20 @@ from tests.e2e.support import set_auth_cookies
 VENDOR_DIR = Path(__file__).parent / "vendor"
 
 #: The CDN scripts the templates pull in. Matched by prefix, since the Alpine
-#: URL pins a version range rather than an exact filename.
+#: URL pins a version range rather than an exact filename, and the marked and
+#: DOMPurify URLs pin exact versions in the path.
 ALPINE_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/alpinejs")
 TAILWIND_CDN = re.compile(r"^https://cdn\.tailwindcss\.com")
+MARKED_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/marked@")
+DOMPURIFY_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/dompurify@")
+
+#: Third-party scripts vendored under `tests/e2e/vendor/`, matched to the CDN
+#: URL they stand in for. Adding a vendored asset is a two-line change here:
+#: download it into `vendor/`, add a pattern and an entry below.
+VENDOR_ASSETS = {
+    MARKED_CDN: "marked.min.js",
+    DOMPURIFY_CDN: "purify.min.js",
+}
 
 #: A browser-side call to the API would mean the BFF contract was bypassed.
 BROWSER_API_CALL = re.compile(r"/api/v\d+/")
@@ -222,14 +236,32 @@ def mock_drf(drf_stub: StubDRFServer) -> Iterator[StubDRFServer]:
 
 @pytest.fixture(autouse=True)
 def offline_assets(page: Page) -> Iterator[Page]:
-    """Serve Alpine locally, stub Tailwind, and block the outside world.
+    """Serve Alpine and the markdown libs locally, stub Tailwind, block the rest.
 
     Route interception earns its keep here rather than on the API: these are
     genuine browser requests, so ``page.route`` is the correct tool. Letting
-    the CDN load would make every modal and card assertion depend on someone
-    else's uptime.
+    the CDN load would make every modal, card, and description assertion depend
+    on someone else's uptime -- and, worse, would make a green run on a machine
+    with a warm cache indistinguishable from a green run against the real thing.
+
+    ``marked`` and ``DOMPurify`` are vendored for a second reason beyond
+    hermeticity: a description is only rendered if both are present, because
+    ``_markdown.html`` falls back to escaped text when the sanitiser is missing.
+    Serving the real files here is what makes that fallback untested -- if these
+    two were stubbed to empty bodies the whole suite would still pass while the
+    markdown feature quietly did nothing.
     """
     alpine = (VENDOR_DIR / "alpine.min.js").read_text(encoding="utf-8")
+    vendored = {
+        pattern: (VENDOR_DIR / name).read_text(encoding="utf-8")
+        for pattern, name in VENDOR_ASSETS.items()
+    }
+
+    def serve_vendor(body: str):
+        def handler(route) -> None:
+            route.fulfill(status=200, content_type="text/javascript", body=body)
+
+        return handler
 
     def serve_alpine(route) -> None:
         route.fulfill(status=200, content_type="text/javascript", body=alpine)
@@ -253,11 +285,13 @@ def offline_assets(page: Page) -> Iterator[Page]:
             "hermetic: serve the asset locally instead of fetching it."
         )
 
-    # Registered last, so the two CDN routes above win for their own URLs.
+    # Registered last, so the specific routes above win for their own URLs.
     page.route(OFF_MACHINE, reject_external)
     page.route(BROWSER_API_CALL, reject_api)
     page.route(TAILWIND_CDN, skip_tailwind)
     page.route(ALPINE_CDN, serve_alpine)
+    for pattern, body in vendored.items():
+        page.route(pattern, serve_vendor(body))
     yield page
 
 

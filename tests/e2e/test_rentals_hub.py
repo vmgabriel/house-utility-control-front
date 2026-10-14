@@ -137,16 +137,19 @@ class TestHubBoots:
     def test_single_x_data_root(self, page: Page, authed: Page, mock_drf):
         """AGENTS.md: directives outside an x-data subtree are ignored.
 
-        Scoped to <main>. The nav's account dropdown is an independent x-data
-        zone defined in base.html, which AGENTS.md explicitly allows; counting
-        the whole document would conflate the two.
+        Scoped to <main>. The nav's account dropdown and the LLM health dot are
+        independent x-data zones defined in base.html, which AGENTS.md
+        explicitly allows; counting the whole document would conflate the two.
+
+        The nav count is a floor, not an exact number. Its job is to prove the
+        `<main>` assertion above did not pass merely because no scope was found
+        -- and the layout's exact number of scopes is not a property of this
+        page, nor something a change to the nav should break a rentals test for.
         """
         mock_rentals(mock_drf)
         page.goto(f"/rentals/apartments/{APARTMENT_ID}")
         assert page.locator("main [x-data]").count() == 1
-        # And the layout does have its own, so the scope above is not passing
-        # merely because nothing was found.
-        assert page.locator("nav [x-data]").count() == 1
+        assert page.locator("nav [x-data]").count() >= 1
 
 
 class TestDocumentUploadDiagnostics:

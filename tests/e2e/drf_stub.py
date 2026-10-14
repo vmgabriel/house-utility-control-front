@@ -215,6 +215,16 @@ class StubBackend:
         self.transactions: list[dict] = []
         #: Backend-owned user rows; the /users/ endpoints serve these.
         self.users: list[dict] = []
+        #: Backend-owned task rows; the /tasks/tasks/ endpoints serve these.
+        self.tasks: list[dict] = []
+        #: Backend-owned goal rows; the /tasks/goals/ endpoint serves these.
+        self.goals: list[dict] = []
+        #: Backend-owned daily plans; the /tasks/daily-plans/ endpoint serves these.
+        self.daily_plans: list[dict] = []
+        #: Whether the fake LLM provider answers. False makes the health probe
+        #: and both triggers answer 503, which is how the real backend reports an
+        #: unreachable provider.
+        self.llm_available: bool = True
         #: Access tokens the stub accepts. Anything else gets a 401.
         self.valid_access_tokens: set[str] = set()
         self.overview: dict = DEFAULT_OVERVIEW
@@ -232,6 +242,10 @@ class StubBackend:
             self.requests.clear()
             self.transactions = []
             self.users = []
+            self.tasks = []
+            self.goals = []
+            self.daily_plans = []
+            self.llm_available = True
             self.valid_access_tokens = {DEFAULT_ACCESS_TOKEN, ROTATED_ACCESS_TOKEN}
             self.overview = DEFAULT_OVERVIEW
             self.user = DEFAULT_USER
@@ -431,6 +445,21 @@ class StubBackend:
         # Item routes are per-id, so they are resolved dynamically.
         self.on_call("*", "/transactions/<id>/", self._item_response)
 
+        # Tasks. The health probe is registered by default rather than per-test
+        # because the layout calls it on every page load -- without it here,
+        # every E2E test would record a 404 the layout never looks at, and the
+        # amber dot would be the correct response to a stub that simply has not
+        # heard of the endpoint.
+        self.on_call("GET", "/tasks/tasks/", self._tasks_list_response)
+        self.on_call("POST", "/tasks/tasks/", self._create_task_response)
+        self.on_call("GET", "/tasks/goals/", self._goals_list_response)
+        self.on_call("GET", "/tasks/daily-plans/", self._daily_plans_response)
+        self.on_call("GET", "/tasks/tasks/llm-health/", self._llm_health_response)
+        self.on_call("POST", "/tasks/tasks/<id>/evaluate/", self._llm_trigger_response)
+        self.on_call(
+            "POST", "/tasks/tasks/<id>/decompose/", self._llm_trigger_response
+        )
+
     def _item_response(self, recorded: RecordedRequest) -> StubResponse:
         transaction_id = recorded.path.removeprefix("/transactions/").removesuffix("/")
         if recorded.method == "GET":
@@ -448,6 +477,54 @@ class StubBackend:
             row.update(payload)
             return StubResponse(200, row)
         return StubResponse(405, {"detail": "Method not allowed."})
+
+    # -- tasks ------------------------------------------------------------
+
+    def _tasks_list_response(self, _recorded: RecordedRequest) -> StubResponse:
+        return StubResponse(200, list(self.tasks))
+
+    def _goals_list_response(self, _recorded: RecordedRequest) -> StubResponse:
+        return StubResponse(200, list(self.goals))
+
+    def _daily_plans_response(self, _recorded: RecordedRequest) -> StubResponse:
+        return StubResponse(200, list(self.daily_plans))
+
+    def _llm_health_response(self, _recorded: RecordedRequest) -> StubResponse:
+        # 503 rather than 200 with `available: false`: that is how the real
+        # backend reports an unreachable provider, and the BFF maps the two
+        # differently -- red for "the provider is down", amber for "we could
+        # not find out". Stubbing it the easy way would let that distinction go
+        # untested.
+        if self.llm_available:
+            return StubResponse(200, {"available": True, "detail": ""})
+        return StubResponse(503, {"detail": "The LLM provider is unreachable."})
+
+    def _llm_trigger_response(self, _recorded: RecordedRequest) -> StubResponse:
+        if not self.llm_available:
+            return StubResponse(503, {"detail": "The LLM provider is unreachable."})
+        # 202 with an empty body: queued, not done. The BFF maps this to `None`,
+        # and a 200 here would hide the distinction the flash wording rests on.
+        return StubResponse(202)
+
+    def _create_task_response(self, recorded: RecordedRequest) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        self._next_id += 1
+        row = {
+            "id": f"task-{self._next_id}",
+            "name": payload.get("name", "New task"),
+            "description": payload.get("description"),
+            "goal_id": payload.get("goal_id"),
+            "due_date": payload.get("due_date"),
+            "importance": payload.get("importance", 1),
+            "priority": payload.get("priority", "medium"),
+            "status": "todo",
+            "estimated_hours": payload.get("estimated_hours"),
+            "is_checked_by_llm": False,
+            "llm_evaluation_failed": False,
+            "is_overwhelmed": None,
+        }
+        self.tasks.append(row)
+        return StubResponse(201, row)
 
     # -- auth enforcement ------------------------------------------------
 

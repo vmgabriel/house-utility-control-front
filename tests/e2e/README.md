@@ -21,6 +21,8 @@ make test-e2e-headed   # visible browser, for debugging a journey
 | `test_dashboard.py` | Summary cards and graceful degradation |
 | `test_smoke.py` | The harness itself: if these fail, everything else is noise |
 | `vendor/alpine.min.js` | Served locally so no test depends on a CDN |
+| `vendor/marked.min.js` | Markdown parser, served locally for the same reason |
+| `vendor/purify.min.js` | Sanitiser; a description is only rendered when this is present, so stubbing it would leave the fallback path untested |
 
 ## Why the backend is faked over HTTP, not with `page.route`
 
@@ -44,9 +46,9 @@ control channel. That is how the tests assert on the payload the BFF actually
 sent, and on the `Authorization` header it forwarded.
 
 Route interception is still used, for the requests the browser genuinely makes:
-Alpine is served from `vendor/`, Tailwind's CDN script is stubbed to an empty
-body, and any off-loopback request fails the test. The suite is hermetic by
-construction rather than by luck.
+Alpine, `marked`, and `DOMPurify` are served from `vendor/`, Tailwind's CDN
+script is stubbed to an empty body, and any off-loopback request fails the test.
+The suite is hermetic by construction rather than by luck.
 
 The stub also enforces `Authorization: Bearer` and keeps a set of accepted
 tokens, so the 401 → refresh → single retry flow in `AutoRefreshingRepository`
