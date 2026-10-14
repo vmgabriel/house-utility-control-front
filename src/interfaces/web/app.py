@@ -58,6 +58,9 @@ from src.shared.auth.jwt_cookie_manager import CookieConfig, JWTCookieManager
 from src.shared.http.auto_refresh import AutoRefreshingRepository
 from src.shared.http.drf_client import DRFAPIClient, ServiceUnavailableError
 from src.shared.infrastructure.clock import SystemClock
+from src.tasks.application.wiring import build_tasks_use_cases
+from src.tasks.infrastructure.drf_client import DrfTasksClient
+from src.tasks.interfaces.web.routes import tasks_bp
 from src.users.application.use_cases import (
     GetAdminStatsUseCase,
     ListUsersUseCase,
@@ -91,6 +94,7 @@ def create_app() -> Flask:
             ("budget", "templates"),
             ("identity", "templates"),
             ("rentals", "web/templates"),
+            ("tasks", "templates"),
         )
     ]
     app.jinja_loader = FileSystemLoader(
@@ -113,6 +117,7 @@ def create_app() -> Flask:
     profile_repo = DRFProfileRepository(api_client)
     user_repo = DRFUserRepository(api_client)
     rentals_client = DrfRentalsClient(api_client)
+    tasks_client = DrfTasksClient(api_client)
 
     # Nextcloud upload path served on THIS app's origin by the reverse proxy.
     #
@@ -163,6 +168,7 @@ def create_app() -> Flask:
     # Exposed so tests can rebuild a bounded context's use cases against a
     # substitute adapter or a frozen clock without reaching into this factory.
     app.extensions["rentals_api_client"] = rentals_client
+    app.extensions["tasks_api_client"] = tasks_client
 
     # Initialize security managers
     cookie_config = CookieConfig(
@@ -198,6 +204,9 @@ def create_app() -> Flask:
     # token as their first positional argument precisely so this works: the proxy
     # identifies the token by position and substitutes the refreshed one there.
     safe_rentals_client = refreshing(rentals_client)
+    # Tasks goes through the same proxy, for the same reason and under the same
+    # positional-token contract its port documents.
+    safe_tasks_client = refreshing(tasks_client)
 
     app.auth_use_case = AuthenticateUserUseCase(auth_repository=auth_repo)
     app.logout_use_case = LogoutUserUseCase(auth_repository=auth_repo)
@@ -238,6 +247,14 @@ def create_app() -> Flask:
     # Rentals use cases, built in their own composition root so no view ever
     # assembles one.
     build_rentals_use_cases(safe_rentals_client, clock=app.clock).attach_to(app)
+
+    # Tasks use cases, built the same way. The two thresholds the tasks pages read
+    # are deployment configuration rather than code, so a deployment can change
+    # them without a release. Both fall back to the domain defaults in the views
+    # when unset or unparseable.
+    app.config.setdefault("TASKS_OVERWHELM_THRESHOLD", "4.0")
+    app.config.setdefault("TASKS_MAX_DAILY_HOURS", "8.0")
+    build_tasks_use_cases(safe_tasks_client, clock=app.clock).attach_to(app)
 
     # Registered first on purpose. Flask runs `after_request` hooks in reverse
     # registration order, so this one executes last -- after the cookie hook
@@ -338,6 +355,7 @@ def create_app() -> Flask:
     app.register_blueprint(profile_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(rentals_bp)
+    app.register_blueprint(tasks_bp)
 
     # LOCAL DEV ONLY -- the rule-6 upload fallback, registered as its own
     # blueprint and only when its flag is set. Removing this block (and the
