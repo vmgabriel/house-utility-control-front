@@ -19,12 +19,15 @@ from src.shared.domain.ports.clock import Clock
 from src.shared.infrastructure.clock import SystemClock
 from src.tasks.application.use_cases import (
     CreateTaskUseCase,
+    DeleteTaskUseCase,
     GetBacklogUseCase,
+    GetCompletedTasksUseCase,
     GetDailyPlanUseCase,
     GetGoalsUseCase,
     GetLlmHealthUseCase,
     TriggerLlmDecompositionUseCase,
     TriggerLlmEvaluationUseCase,
+    UpdateTaskUseCase,
 )
 
 
@@ -34,6 +37,9 @@ class TasksUseCases:
 
     get_backlog: GetBacklogUseCase
     create_task: CreateTaskUseCase
+    update_task: UpdateTaskUseCase
+    delete_task: DeleteTaskUseCase
+    get_completed_tasks: GetCompletedTasksUseCase
     get_goals: GetGoalsUseCase
     get_daily_plan: GetDailyPlanUseCase
     get_llm_health: GetLlmHealthUseCase
@@ -45,6 +51,9 @@ class TasksUseCases:
     APP_ATTRIBUTES = (
         ("get_backlog_use_case", "get_backlog"),
         ("create_task_use_case", "create_task"),
+        ("update_task_use_case", "update_task"),
+        ("delete_task_use_case", "delete_task"),
+        ("get_completed_tasks_use_case", "get_completed_tasks"),
         ("get_goals_use_case", "get_goals"),
         ("get_daily_plan_use_case", "get_daily_plan"),
         ("get_llm_health_use_case", "get_llm_health"),
@@ -77,6 +86,9 @@ def build_tasks_use_cases(
     return TasksUseCases(
         get_backlog=GetBacklogUseCase(tasks_client=tasks_client),
         create_task=CreateTaskUseCase(tasks_client=tasks_client, clock=resolved_clock),
+        update_task=UpdateTaskUseCase(tasks_client=tasks_client),
+        delete_task=DeleteTaskUseCase(tasks_client=tasks_client),
+        get_completed_tasks=GetCompletedTasksUseCase(tasks_client=tasks_client),
         get_goals=GetGoalsUseCase(tasks_client=tasks_client),
         get_daily_plan=GetDailyPlanUseCase(
             tasks_client=tasks_client, clock=resolved_clock

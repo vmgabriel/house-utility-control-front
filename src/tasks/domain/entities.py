@@ -28,6 +28,8 @@ from src.tasks.domain.exceptions import (
 )
 from src.tasks.domain.value_objects import (
     HOUR_STEP,
+    MAX_DESCRIPTION_LENGTH,
+    MAX_NAME_LENGTH,
     MIN_IMPORTANCE,
     DailyPlanId,
     Duration,
@@ -38,10 +40,22 @@ from src.tasks.domain.value_objects import (
     TaskId,
     TaskStatus,
     normalize_markdown,
+    normalize_name,
 )
 
-MAX_NAME_LENGTH = 200
-MAX_DESCRIPTION_LENGTH = 5000
+#: Re-exported from the value objects rather than redefined. `TaskEdits` enforces
+#: the same limits on the edit path and lives in `value_objects`, which this
+#: module imports -- so the constants have to be defined on the other side of
+#: that dependency or one of the two paths would have to guess at them.
+#: `create_task.py` imports `MAX_DESCRIPTION_LENGTH` from here and is unaffected.
+__all__ = [
+    "MAX_DESCRIPTION_LENGTH",
+    "MAX_NAME_LENGTH",
+    "DEFAULT_OVERWHELM_THRESHOLD",
+    "DailyPlan",
+    "Goal",
+    "Task",
+]
 
 #: A task estimated at more hours than this is flagged as overloaded by default.
 #:
@@ -261,16 +275,7 @@ class Task:
 
     @staticmethod
     def _clean_name(name: object) -> str:
-        if not isinstance(name, str):
-            raise InvalidTaskError("Task name must be a string.")
-        normalized = " ".join(name.split())
-        if not normalized:
-            raise InvalidTaskError("Task name cannot be empty.")
-        if len(normalized) > MAX_NAME_LENGTH:
-            raise InvalidTaskError(
-                f"Task name cannot exceed {MAX_NAME_LENGTH} characters."
-            )
-        return normalized
+        return normalize_name(name, MAX_NAME_LENGTH, "Task name", InvalidTaskError)
 
 
 @dataclass(eq=False, slots=True)
@@ -287,6 +292,12 @@ class Goal:
     description: str | None = None
     due_date: date | None = None
     status: GoalStatus = GoalStatus.ACTIVE
+    #: How many tasks the backend has filed under this goal.
+    #:
+    #: Mapped from `GoalSerializer.task_count` rather than computed here. It is a
+    #: field on the wire, so deriving it would mean fetching every task to count
+    #: rows the backend already counted -- and the two numbers could disagree.
+    task_count: int = 0
 
     def __post_init__(self) -> None:
         self.name = self._clean_name(self.name)
@@ -302,6 +313,12 @@ class Goal:
             _require_exact_date_for_goal(self.due_date, "Goal due date")
         if not isinstance(self.status, GoalStatus):
             raise InvalidGoalError("Goal status must be a GoalStatus.")
+        if (
+            isinstance(self.task_count, bool)
+            or not isinstance(self.task_count, int)
+            or self.task_count < 0
+        ):
+            raise InvalidGoalError("Goal task count must be a non-negative integer.")
 
     def is_overdue(self, today: date) -> bool:
         """Whether the due date has passed and the goal is still active.
@@ -321,16 +338,7 @@ class Goal:
 
     @staticmethod
     def _clean_name(name: object) -> str:
-        if not isinstance(name, str):
-            raise InvalidGoalError("Goal name must be a string.")
-        normalized = " ".join(name.split())
-        if not normalized:
-            raise InvalidGoalError("Goal name cannot be empty.")
-        if len(normalized) > MAX_NAME_LENGTH:
-            raise InvalidGoalError(
-                f"Goal name cannot exceed {MAX_NAME_LENGTH} characters."
-            )
-        return normalized
+        return normalize_name(name, MAX_NAME_LENGTH, "Goal name", InvalidGoalError)
 
 
 @dataclass(eq=False, slots=True)

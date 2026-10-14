@@ -32,7 +32,7 @@ from datetime import date
 from typing import Protocol
 
 from src.tasks.domain.entities import DailyPlan, Goal, Task
-from src.tasks.domain.value_objects import LlmHealth, TaskId
+from src.tasks.domain.value_objects import LlmHealth, TaskEdits, TaskId
 
 
 class TasksApiClient(Protocol):
@@ -41,9 +41,11 @@ class TasksApiClient(Protocol):
     async def get_backlog(self, access_token: str) -> list[Task]:
         """List every open task, most urgent first.
 
-        The backend scopes "open" to not-done tasks; a done task is still
-        reachable by id but is absent from the backlog, which is why no status
-        filter is sent.
+        "Open" means not-``done``. It is applied by the adapter rather than by
+        the endpoint, because the backend's `status` filter takes a single value
+        from ``todo``/``doing``/``done`` and so cannot express "everything that
+        is not done". A done task is still reachable by id, and appears in the
+        completed list instead.
         """
         ...
 
@@ -73,6 +75,46 @@ class TasksApiClient(Protocol):
         already applied the name, description, and hours invariants, and
         re-validating the same fields as arguments here would give the caller two
         ways to build the same request.
+        """
+        ...
+
+    async def update_task(
+        self, access_token: str, task_id: TaskId, edits: TaskEdits
+    ) -> Task:
+        """Apply a partial update and return the task as the backend stored it.
+
+        The return value is not a convenience. The backend echoes the whole
+        `TaskSerializer` from the entity it just reloaded, which is the only
+        authoritative view of the result: `is_overwhelmed` in particular is
+        recomputed server-side against the task's new estimate, so returning the
+        pre-update entity would show the user a badge that no longer matches
+        what a reload would render.
+        """
+        ...
+
+    async def delete_task(self, access_token: str, task_id: TaskId) -> None:
+        """Delete one task.
+
+        Returns nothing because the backend answers `204 No Content`; there is
+        no deleted representation to map.
+        """
+        ...
+
+    async def get_completed_tasks(self, access_token: str) -> list[Task]:
+        """List the caller's tasks whose status is ``done``.
+
+        A separate method rather than a `status` argument on
+        :meth:`get_backlog` because the two endpoints answer different
+        questions: the backlog is the working set, this is the finished set, and
+        they are filtered and ordered differently server-side.
+
+        **The ordering is the backend's, and it is not by completion time.** The
+        backend sorts on `-created_at, -id` and the task payload carries no
+        completion timestamp at all (see :meth:`Task.completed_at` on the
+        adapter), so this list runs from most-recently-*created* to oldest, and
+        a task created long ago and finished yesterday appears near the bottom.
+        Every caller that renders this list says so to the user rather than
+        presenting the order as recency.
         """
         ...
 

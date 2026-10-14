@@ -4,13 +4,34 @@
 {% block content %}
 {#
     ONE top-level x-data scope owns everything interactive on this page: the
-    Create Task button and its modal, and the per-row Decompose buttons.
+    Create Task button and its modal, the per-row Decompose buttons, the Edit
+    and Delete buttons and their two modals, and the finished-task section.
 
     They share a scope deliberately rather than each row getting its own. The
     decompose buttons all mutate the same list, so a single `pending` map keyed by
     task id is what lets two buttons on two different rows show their own spinner
     without the page growing one scope per task. A second `x-data` inside this
     one is the bug AGENTS.md's Alpine rule warns about, so there is none.
+
+    ## Why the edit modal reads its values from `dataset`
+
+    The obvious way to build this is `@click="openEdit({name: '{{ task.name }}', ...})"`
+    -- one modal, fed by a per-row JavaScript object literal. It is rejected, and
+    not as a style preference:
+
+    * `x-data`'s body is a JavaScript expression, so a task named `'); fetch(...)//`
+      would execute. `tests/integration/web/test_security.py::
+      test_user_data_is_not_interpolated_into_javascript` exists to catch exactly
+      this, and interpolating task fields would fail it -- correctly.
+    * Even inside a quoted attribute it would need JS-level escaping, and Jinja's
+      HTML escaping is not JS escaping. They differ on quotes, backslashes, and
+      newlines, which a markdown description is full of.
+
+    So the row's values travel as HTML attributes on the Edit button, escaped by
+    Jinja the way every other attribute on this page is, and `openEdit($el)` reads
+    them back off `$el.dataset`. The same mechanism `x-init` already uses for the
+    CSRF token and the decompose URL. The trade is that a multi-line description
+    occupies a multi-line attribute -- ugly, harmless, and correct.
 
     The descriptions are rendered by `gFm.render`, which is the page's Markdown
     surface. Nothing here is interpolated into `x-html` unsanitised -- see
@@ -27,6 +48,56 @@
             decomposing: false,
             message: '',
             messageOk: true,
+            // Edit-modal state. `editing` is empty until a row's Edit button
+            // populates it; `editingId` is the single source of truth for
+            // whether the modal is open, so the two cannot disagree.
+            editingId: '',
+            editBase: '',
+            deleteBase: '',
+            editing: {
+                name: '',
+                description: '',
+                dueDate: '',
+                priority: 'medium',
+                estimatedHours: ''
+            },
+            openEdit(el) {
+                this.editing = {
+                    name: el.dataset.taskName,
+                    description: el.dataset.taskDescription,
+                    dueDate: el.dataset.taskDue,
+                    priority: el.dataset.taskPriority,
+                    estimatedHours: el.dataset.taskHours
+                };
+                this.editingId = el.dataset.taskId;
+            },
+            closeEdit() {
+                this.editingId = '';
+            },
+            // Delete-confirmation state. Only the id is kept, not a copy of the
+            // task: the confirmation reads the name, and re-fetching it to show
+            // a string would mean the user could confirm against a name that is
+            // no longer the one they saw.
+            deletingId: '',
+            deletingName: '',
+            openDelete(el) {
+                this.deletingId = el.dataset.taskId;
+                this.deletingName = el.dataset.taskName;
+            },
+            closeDelete() {
+                this.deletingId = '';
+            },
+            // Both modals are rendered once and reused for every row, so their
+            // form actions cannot be a static `url_for` -- that would need the
+            // task id at render time. `__TASK_ID__` is a literal placeholder and
+            // the id substituted into it is the UUID Alpine read off a data
+            // attribute, so nothing user-supplied ever reaches a path.
+            get editUrl() {
+                return this.editBase.replace('__TASK_ID__', this.editingId);
+            },
+            get deleteUrl() {
+                return this.deleteBase.replace('__TASK_ID__', this.deletingId);
+            },
             async decompose(taskId, event) {
                 event.preventDefault();
                 if (this.pending[taskId]) return;
@@ -65,8 +136,10 @@
          characters of verbosity is a fair price for a boundary that holds.
      #}
      data-decompose-base="{{ url_for('tasks.decompose_task', task_id='__TASK_ID__') }}"
+     data-edit-base="{{ url_for('tasks.update_task', task_id='__TASK_ID__') }}"
+     data-delete-base="{{ url_for('tasks.delete_task', task_id='__TASK_ID__') }}"
      data-csrf-token="{{ csrf_token }}"
-     x-init="csrfToken = $el.dataset.csrfToken; decomposeBase = $el.dataset.decomposeBase"
+     x-init="csrfToken = $el.dataset.csrfToken; decomposeBase = $el.dataset.decomposeBase; editBase = $el.dataset.editBase; deleteBase = $el.dataset.deleteBase"
      class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
     {# ---------------------------------------------------------------- #}
@@ -166,6 +239,23 @@
                                 AI: revisada
                             </span>
                             {% endif %}
+
+                            {#
+                                Shown only when the task is actually filed under a
+                                goal (`goal_id` is a nullable FK, so most rows have
+                                none). Links to the goals *list*, not to a per-goal
+                                page: this BFF has no `/goals/<id>` route, and a
+                                link to one would be a dead badge. Deep-linking to
+                                a single goal needs a detail page first.
+                            #}
+                            {% if task.goal_id %}
+                            <a data-testid="derived-from-goal-badge"
+                               href="{{ url_for('tasks.goals') }}"
+                               title="This task was created from a goal."
+                               class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 hover:bg-purple-200">
+                                Derived from Goal
+                            </a>
+                            {% endif %}
                         </div>
 
                         {# Markdown. `gFm.render` sanitises, which is what makes `innerHTML` safe
@@ -211,21 +301,53 @@
                         </dl>
                     </div>
 
-                    {# Action column. Only the decompose button is here: the
-                       evaluate action exists in the API and has a route, but it
-                       has no button because the user has nothing to do with its
-                       result beyond a badge that appears on the next load. A
-                       second identical-looking button on the same row would
-                       invite the question of which one to press.
+                    {# Action column.
 
-                       `type="button"`, not a submit: the request goes through
-                       `fetch` so the button can show a pending state and the
-                       page does not reload. That does mean this one action needs
-                       JavaScript -- accepted, because the alternative is a
+                       No evaluate button, though the endpoint and a route exist
+                       for it: the user can do nothing with its result beyond a
+                       badge that appears on the next load, and a second
+                       near-identical button on the same row would only invite the
+                       question of which one to press.
+
+                       `type="button"`, not a submit, for decompose: the request
+                       goes through `fetch` so the button can show a pending state
+                       and the page does not reload. That does mean this one action
+                       needs JavaScript -- accepted, because the alternative is a
                        button that reloads the page on every click for an
                        operation whose result is by definition not visible until
-                       the reload anyway. #}
+                       the reload anyway.
+
+                       Edit and Delete are plain buttons that open a modal; the
+                       form that eventually submits lives inside that modal, so
+                       both degrade to a working submit if Alpine never boots.
+
+                       The row's values ride along as data attributes on the Edit
+                       and Delete buttons rather than as arguments to an Alpine
+                       method -- see the note at the top of this file on why user
+                       text must not be interpolated into a `x-data` expression. #}
                     <div class="flex items-center gap-2">
+                        <button type="button"
+                                data-testid="edit-button"
+                                @click="openEdit($el)"
+                                data-task-id="{{ task.id }}"
+                                data-task-name="{{ task.name }}"
+                                data-task-description="{{ task.description_markdown }}"
+                                data-task-due="{{ task.due_date }}"
+                                data-task-priority="{{ task.priority_value }}"
+                                data-task-hours="{{ task.estimated_hours_value }}"
+                                class="px-3 py-2 text-xs font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            Edit
+                        </button>
+
+                        <button type="button"
+                                data-testid="delete-button"
+                                @click="openDelete($el)"
+                                data-task-id="{{ task.id }}"
+                                data-task-name="{{ task.name }}"
+                                class="px-3 py-2 text-xs font-medium text-red-700 border border-red-300 rounded-lg hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
+                            Delete
+                        </button>
+
                         {% if task.is_overwhelmed %}
                         <button type="button"
                                 data-testid="decompose-button"
@@ -243,6 +365,94 @@
             {% endfor %}
         </ul>
     {% endif %}
+
+    {# ---------------------------------------------------------------- #}
+    {# Completed tasks                                                 #}
+    {# ---------------------------------------------------------------- #}
+    {# The heading says "Completed" and nothing about a window. The product
+       asked for "the last 7 days", and the backend cannot answer that: there is
+       no `completed_at` on `TaskModel` and none on `TaskSerializer`, so nothing
+       records *when* a task was finished. `updated_at` is the nearest field and
+       it is the wrong one -- renaming a task or promoting its priority moves it,
+       so a week-old task finished yesterday would sort to the bottom and a task
+       finished last month but renamed today would sort to the top. The list is
+       therefore ordered by the backend's `-created_at` and labelled as such. #}
+    <section class="mt-10" aria-labelledby="completed-heading">
+        <div class="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+            <h2 id="completed-heading" class="text-lg font-semibold text-gray-900">
+                Completed tasks
+            </h2>
+            {% if not completed.is_empty %}
+            <p class="text-xs text-gray-500">
+                {{ completed.tasks|length }} finished &middot; newest created first
+            </p>
+            {% endif %}
+        </div>
+
+        {% if completed_unavailable %}
+            {# Distinct from the empty state on purpose. "You have finished
+               nothing" and "we could not ask" are different facts, and collapsing
+               them would let a backend outage look like good news. #}
+            <div class="p-6 text-sm text-center bg-white rounded-lg border border-dashed border-amber-300 bg-amber-50"
+                 data-testid="completed-unavailable">
+                <p class="text-amber-800">Completed tasks could not be loaded right now.</p>
+            </div>
+        {% elif completed.is_empty %}
+            <div class="p-6 text-sm text-center bg-white rounded-lg border border-dashed border-gray-300"
+                 data-testid="completed-empty">
+                <p class="text-gray-600">No recently completed tasks.</p>
+            </div>
+        {% else %}
+            <ul class="space-y-2" data-testid="completed-task-list">
+                {% for task in completed.tasks %}
+                <li class="flex flex-wrap items-center justify-between gap-3 p-3 bg-white rounded-lg border border-gray-200"
+                    data-testid="completed-task-row" data-task-id="{{ task.id }}">
+
+                    <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="font-medium text-gray-900">{{ task.name }}</span>
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full {{ task.status_style }}">
+                                {{ task.status_label }}
+                            </span>
+                            {% if task.goal_id %}
+                            <a data-testid="completed-derived-from-goal-badge"
+                               href="{{ url_for('tasks.goals') }}"
+                               title="This task was created from a goal."
+                               class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 hover:bg-purple-200">
+                                Derived from Goal
+                            </a>
+                            {% endif %}
+                        </div>
+                        {% if task.due_date %}
+                        <p class="mt-1 text-xs text-gray-500">
+                            Due <time datetime="{{ task.due_date }}">{{ task.due_date }}</time>
+                        </p>
+                        {% endif %}
+                    </div>
+
+                    {# Delete only, and no Reopen. Reopening a finished task is
+                       not something this API can express: `status` is not on
+                       `UpdateTaskSerializer`, and the only inbound transition,
+                       `POST /tasks/<id>/mark-doing/`, answers 409
+                       (`TaskAlreadyDone`) precisely because a completed task is
+                       meant to stay completed. Rendering a Reopen button that
+                       cannot work would advertise a feature the product does not
+                       have; a disabled one would advertise it more loudly. #}
+                    <div class="flex items-center gap-2">
+                        <button type="button"
+                                data-testid="completed-delete-button"
+                                @click="openDelete($el)"
+                                data-task-id="{{ task.id }}"
+                                data-task-name="{{ task.name }}"
+                                class="px-3 py-2 text-xs font-medium text-red-700 border border-red-300 rounded-lg hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
+                            Delete
+                        </button>
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    </section>
 
     {# ---------------------------------------------------------------- #}
     {# Modal: create a task                                            #}
@@ -293,26 +503,40 @@
 
                     <label class="block">
                         <span class="text-sm font-medium text-gray-700">Due date</span>
-                        <input type="date" name="due_date" value=""
+                        {#
+                            `min` is today, matching `CreateTaskUseCase`: a task
+                            may not be dated in the past. The attribute is only a
+                            nudge -- the browser's own validation can be bypassed,
+                            and the date picker still allows typing a past date by
+                            hand -- so the use case remains the authority. Its value
+                            here is that the picker greys out what the server would
+                            reject, instead of letting the user pick it and then
+                            tell them off.
+                        #}
+                        <input type="date" name="due_date" value="" min="{{ today }}"
                                class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
                     </label>
 
-                    <label class="block">
-                        <span class="text-sm font-medium text-gray-700">Priority</span>
+                    
+
+                    {#
+                        One selector, not two. The backend's single field is
+                        `importance` and it takes a low/medium/high choice; the
+                        separate 1-5 `importance` the domain models has no wire
+                        representation at all, and offering it would let the user
+                        pick something the backend then ignores. The dots on the
+                        task row are derived from this level in the mapper.
+
+                        Labelled "Importance" because that is the backend's name
+                        for it, even though the form posts it as `priority` --
+                        see `CreateTaskUseCase.execute` and `task_to_payload`.
+                    #}
+                    <label class="block sm:col-span-2">
+                        <span class="text-sm font-medium text-gray-700">Importance</span>
                         <select name="priority"
                                 class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
                             {% for value, label in priorities %}
                             <option value="{{ value }}" {% if value == 'medium' %}selected{% endif %}>{{ label }}</option>
-                            {% endfor %}
-                        </select>
-                    </label>
-
-                    <label class="block">
-                        <span class="text-sm font-medium text-gray-700">Importance</span>
-                        <select name="importance"
-                                class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            {% for level in range(1, 6) %}
-                            <option value="{{ level }}">{{ level }} of 5</option>
                             {% endfor %}
                         </select>
                     </label>
@@ -339,6 +563,154 @@
                         Create task
                     </button>
                 </div>
+            </form>
+        </div>
+    </div>
+
+    {# ---------------------------------------------------------------- #}
+    {# Modal: edit a task                                               #}
+    {# ---------------------------------------------------------------- #}
+    {# One modal for every row, populated by `openEdit($el)` from the data
+       attributes on whichever Edit button was pressed. The alternative -- a
+       modal rendered per row, hidden with `x-show` -- would work and would ship
+       a full copy of this form per task on a page that can hold hundreds.
+
+       The form posts all five fields even when they are empty. That is the
+       contract, not a simplification: `UpdateTaskSerializer` is applied with
+       `partial=True`, where an absent key means "leave this alone" and only an
+       explicit value changes the column. A form that omitted empty inputs would
+       make it impossible to clear a description, a due date, or an estimate --
+       the three fields where clearing is the whole point of the edit.
+
+       No goal field, and no status field. Neither is on the update serializer:
+       the goal moves through `POST /goals/<id>/link-task/`, and the status
+       through the dedicated mark-doing / mark-done actions. Offering either here
+       would let the user "save" a change the backend discards. #}
+    <div x-show="editingId" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="closeEdit()" role="dialog" aria-modal="true"
+         aria-labelledby="edit-task-title">
+        <div class="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl max-h-[90vh] overflow-y-auto"
+             @click.outside="closeEdit()">
+            <h3 id="edit-task-title" class="text-lg font-semibold text-gray-900">Edit task</h3>
+
+            {#
+                The action is built from the id Alpine already holds, via
+                `replace`. It cannot be a static `url_for`, because that needs
+                the task id at render time and the modal is rendered once for
+                every task on the page. `__TASK_ID__` is a literal, so nothing
+                user-supplied is ever part of a path.
+            #}
+            <form :action="editUrl" method="POST"
+                  class="mt-4 grid gap-4"
+                  data-testid="edit-task-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Name</span>
+                    <input type="text" name="name" required maxlength="200"
+                           x-model="editing.name"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </label>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Description</span>
+                    <textarea name="description" rows="4" maxlength="5000"
+                              x-model="editing.description"
+                              class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                    <span class="mt-1 block text-xs text-gray-500">
+                        Markdown. Clear this to remove the description.
+                    </span>
+                </label>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Due date</span>
+                        {#
+                            No `min` here, unlike the create form. `CreateTaskUseCase`
+                            refuses a past due date, but the update path applies no
+                            such rule, and a picker greyed out to today would stop
+                            the user fixing a task they dated in error -- which is
+                            the ordinary reason to open an edit form on one.
+                        #}
+                        <input type="date" name="due_date" x-model="editing.dueDate"
+                               class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-gray-700">Importance</span>
+                        {#
+                            Same single selector as the create form, for the same
+                            reason: the backend has one `importance` field taking a
+                            low/medium/high choice and no 1-5 one. The options are
+                            rendered server-side and matched with `x-model`, so the
+                            current value is selected by the browser rather than by
+                            a `:selected` binding Alpine would have to reconcile.
+                        #}
+                        <select name="priority" x-model="editing.priority"
+                                class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            {% for value, label in priorities %}
+                            <option value="{{ value }}">{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                </div>
+
+                <label class="block">
+                    <span class="text-sm font-medium text-gray-700">Estimated hours</span>
+                    <input type="number" name="estimated_hours" step="0.25" min="0"
+                           x-model="editing.estimatedHours"
+                           class="mt-1 w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <span class="mt-1 block text-xs text-gray-500">
+                        Clear this to remove the estimate. Above
+                        {{ backlog.overwhelm_threshold }}h the task is flagged as large.
+                    </span>
+                </label>
+
+                <div class="flex justify-end gap-3 pt-2">
+                    <button type="button" @click="closeEdit()" data-testid="edit-task-cancel"
+                            class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Cancel
+                    </button>
+                    <button type="submit" data-testid="edit-task-submit"
+                            class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Save changes
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# ---------------------------------------------------------------- #}
+    {# Modal: confirm a delete                                          #}
+    {# ---------------------------------------------------------------- #}
+    {# A real form inside the dialog, so confirming is a normal POST. The modal
+       is only the confirmation step; the request itself does not depend on
+       Alpine, which matters for an irreversible action. #}
+    <div x-show="deletingId" x-cloak x-transition.opacity
+         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/50"
+         @keydown.escape.window="closeDelete()" role="dialog" aria-modal="true"
+         aria-labelledby="delete-task-title">
+        <div class="w-full max-w-md p-6 bg-white rounded-lg shadow-xl"
+             @click.outside="closeDelete()">
+            <h3 id="delete-task-title" class="text-lg font-semibold text-gray-900">Delete this task?</h3>
+
+            <p class="mt-3 text-sm text-gray-700">
+                <span class="font-medium" data-testid="delete-task-name" x-text="deletingName"></span>
+                will be deleted permanently. It will also be removed from any daily plan
+                it was scheduled on.
+            </p>
+
+            <form :action="deleteUrl" method="POST" class="mt-6 flex justify-end gap-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="button" @click="closeDelete()" data-testid="delete-task-cancel"
+                        class="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    Cancel
+                </button>
+                <button type="submit" data-testid="confirm-delete-submit"
+                        class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
+                    Delete task
+                </button>
             </form>
         </div>
     </div>

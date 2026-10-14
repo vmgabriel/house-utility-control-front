@@ -25,11 +25,18 @@ Status handling differs by intent, and the difference matters:
 * A ``400`` is not converted into a domain error. The use cases already rejected
   the equivalent input locally, so one reaching DRF means a rule exists only
   server-side and its field-level detail is worth surfacing verbatim.
+* A ``404`` on update or delete becomes ``TaskNotFoundError``, including on
+  delete. Deleting something that is already gone is not a success: the user was
+  looking at a row that had stopped existing, and telling them "deleted" would
+  hide that their view was stale.
 """
 
 from __future__ import annotations
 
 from datetime import date
+from logging import getLogger
+
+from pydantic import ValidationError as PydanticValidationError
 
 from src.shared.http.drf_client import (
     DRFAPIClient,
@@ -42,12 +49,13 @@ from src.tasks.domain.exceptions import (
     LlmUnavailableError,
     TaskNotFoundError,
 )
-from src.tasks.domain.value_objects import LlmHealth, TaskId
+from src.tasks.domain.value_objects import LlmHealth, TaskEdits, TaskId, TaskStatus
 from src.tasks.infrastructure.mappers import (
     map_daily_plan,
     map_goal,
     map_llm_health,
     map_task,
+    task_edits_to_payload,
     task_to_payload,
 )
 from src.tasks.infrastructure.schemas import (
@@ -56,6 +64,8 @@ from src.tasks.infrastructure.schemas import (
     DRFLlmHealthResponse,
     DRFTaskResponse,
 )
+
+logger = getLogger()
 
 
 def _as_list(body: object, entity: str) -> list:
@@ -100,21 +110,29 @@ def _as_llm_unavailable(exc: DRFAPIClientError) -> LlmUnavailableError:
     return exc  # type: ignore[return-value]
 
 
-def _detail_of(detail: object) -> str | None:
-    """Pull the human-readable reason out of a DRF error body.
+def _validated(schema: type, body: object, entity: str):
+    """Validate ``body`` against a hand-written schema, or explain its failure.
 
-    DRF answers an error with ``{"detail": "..."}`` or, for a serializer
-    failure, a dict of field errors. Only the first shape carries a sentence
-    worth showing, and the second would render as a Python dict in a tooltip.
-    Anything else is dropped rather than stringified -- the tooltip is a
-    nicety, and showing `{'key rejected': ['Invalid API key']}` to a user is
-    worse than showing nothing.
+    The boundary's contract is that no foreign exception escapes it -- the same
+    one that keeps ``httpx.TransportError`` from reaching a use case. A raw
+    ``pydantic.ValidationError`` is the other way that contract breaks, and it
+    broke in production before this existed: the health schema expected an
+    `available` boolean the API never sent, the navbar polled it on every page
+    load, and every page in the app returned a 500 because a pydantic error is
+    not a `DomainException` and so was not softened by the use case.
+
+    The message keeps the schema name, the missing field, and the payload, because
+    the fix is always "compare this schema against the serializer" and those
+    three are what that comparison needs.
     """
-    if isinstance(detail, dict):
-        message = detail.get("detail")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-    return None
+    try:
+        return schema.model_validate(body)
+    except PydanticValidationError as exc:
+        raise InvalidTasksInputError(
+            f"The {entity} response did not match the expected contract "
+            f"({schema.__name__}): {exc}. The backend's serializer and "
+            f"src/tasks/infrastructure/schemas.py have diverged."
+        ) from exc
 
 
 class DrfTasksClient:
@@ -132,10 +150,34 @@ class DrfTasksClient:
     # Tasks
     # ------------------------------------------------------------------ #
     async def get_backlog(self, access_token: str) -> list[Task]:
+        """List the open tasks -- everything not yet ``done``.
+
+        Filtered here rather than by the endpoint, and the reason is that the
+        backend's filter takes exactly one status:
+        `TaskFilterQuerySerializer.status` is a single `ChoiceField` over
+        ``todo`` / ``doing`` / ``done``, so there is no ``?status=open`` to ask
+        for. `ListUserTasks` fetches the owner's rows and applies whatever
+        filter it was given -- and given none, it applies none, returning
+        finished tasks too.
+
+        That was harmless while nothing else on the page showed a finished task.
+        It is not any more: with a completed-tasks section on the same page, an
+        unfiltered backlog lists every finished task twice, once as work and
+        once as history. Dropping `done` here is what makes the two sections
+        partition the task list, which is the only reading of "backlog" and
+        "completed" that adds up.
+
+        Only `done` is excluded. `todo` and `doing` are both open work, and the
+        backlog renders both with a status badge.
+        """
         body = await self.api_client.list_tasks(access_token)
         return [
-            map_task(DRFTaskResponse.model_validate(item))
-            for item in _as_list(body, "Task")
+            task
+            for task in (
+                map_task(_validated(DRFTaskResponse, item, "Task"))
+                for item in _as_list(body, "Task")
+            )
+            if task.status is not TaskStatus.DONE
         ]
 
     async def get_task(self, access_token: str, task_id: TaskId) -> Task:
@@ -143,11 +185,76 @@ class DrfTasksClient:
             body = await self.api_client.get_task(access_token, str(task_id))
         except NotFoundError as exc:
             raise TaskNotFoundError("Task not found or not accessible.") from exc
-        return map_task(DRFTaskResponse.model_validate(_as_mapping(body, "Task")))
+        return map_task(_validated(DRFTaskResponse, _as_mapping(body, "Task"), "Task"))
 
     async def create_task(self, access_token: str, task: Task) -> Task:
         body = await self.api_client.create_task(access_token, task_to_payload(task))
-        return map_task(DRFTaskResponse.model_validate(_as_mapping(body, "Task")))
+        # Logged, not printed: this is the one request whose payload is worth
+        # having in the logs when a create misbehaves, and stdout is not a log.
+        logger.info("payload for create task - %s", body)
+        return map_task(_validated(DRFTaskResponse, _as_mapping(body, "Task"), "Task"))
+
+    async def update_task(
+        self, access_token: str, task_id: TaskId, edits: TaskEdits
+    ) -> Task:
+        """PATCH the task and map the task the backend sends back.
+
+        The response is the whole `TaskSerializer`, not an ack, and that is
+        deliberate: `is_overwhelmed` is recomputed server-side against the task's
+        *new* estimate, so the returned entity is the first authoritative view
+        of the result. Echoing the pre-update entity back to the template would
+        render a badge that a reload would contradict.
+        """
+        try:
+            body = await self.api_client.update_task(
+                access_token, str(task_id), task_edits_to_payload(edits)
+            )
+        except NotFoundError as exc:
+            raise TaskNotFoundError("Task not found or not accessible.") from exc
+        return map_task(_validated(DRFTaskResponse, _as_mapping(body, "Task"), "Task"))
+
+    async def delete_task(self, access_token: str, task_id: TaskId) -> None:
+        """DELETE the task, discarding the empty body.
+
+        A 404 becomes `TaskNotFoundError` rather than being treated as success.
+        The row the user confirmed was on screen, and "it was already gone" is a
+        different situation from "I deleted it" -- the view words them
+        differently so the user learns which happened.
+        """
+        try:
+            await self.api_client.delete_task(access_token, str(task_id))
+        except NotFoundError as exc:
+            raise TaskNotFoundError("Task not found or not accessible.") from exc
+
+    async def get_completed_tasks(self, access_token: str) -> list[Task]:
+        """List the caller's `done` tasks.
+
+        Filtered server-side with ``?status=done`` rather than by fetching
+        everything and dropping `status == done` here. Two reasons: the backlog
+        endpoint and this one would otherwise be the same request under two
+        names, and doing the selection in the BFF would mean fetching every open
+        task on a page whose only subject is the finished ones.
+
+        **No date filtering is applied, here or afterwards.** The backend has no
+        completion timestamp to filter on -- `TaskModel` has no `completed_at`
+        and `TaskSerializer` sends no completion time, so `created_at` and
+        `updated_at` are both "last touched" and neither identifies when a task
+        was finished. The seven-day window the product asked for is therefore not
+        implementable against this API; approximating it on `updated_at` would
+        put tasks edited today at the top of a "recently completed" list
+        regardless of when they were done. See `GetCompletedTasksUseCase` for
+        the full argument.
+
+        `done` is the wire value, not `completed`: `TASK_STATUS_CHOICES` is
+        ``todo`` / ``doing`` / ``done``.
+        """
+        body = await self.api_client.list_tasks_by_status(
+            access_token, TaskStatus.DONE.value
+        )
+        return [
+            map_task(_validated(DRFTaskResponse, item, "Task"))
+            for item in _as_list(body, "Task")
+        ]
 
     # ------------------------------------------------------------------ #
     # Goals
@@ -155,7 +262,7 @@ class DrfTasksClient:
     async def get_goals(self, access_token: str) -> list[Goal]:
         body = await self.api_client.list_goals(access_token)
         return [
-            map_goal(DRFGoalResponse.model_validate(item))
+            map_goal(_validated(DRFGoalResponse, item, "Goal"))
             for item in _as_list(body, "Goal")
         ]
 
@@ -176,7 +283,7 @@ class DrfTasksClient:
         """
         body = await self.api_client.list_daily_plans(access_token)
         plans = [
-            map_daily_plan(DRFDailyPlanResponse.model_validate(item))
+            map_daily_plan(_validated(DRFDailyPlanResponse, item, "DailyPlan"))
             for item in _as_list(body, "DailyPlan")
         ]
         for plan in plans:
@@ -213,13 +320,12 @@ class DrfTasksClient:
     async def get_llm_health(self, access_token: str) -> LlmHealth:
         """Report provider reachability, or raise for the use case to soften.
 
-        A ``503`` is *not* raised. Unlike every other status here, it is the
-        backend answering the question: "the provider is unreachable" is the
-        answer, not a failure to obtain it. Turning it into an exception would
-        hand the use case a ``LlmUnavailableError`` to soften into
-        ``LlmHealth.indeterminate`` and render an amber dot -- telling the user
-        "we do not know" when the backend just told us, in as many words, that
-        the AI is down. So it is mapped to the red state directly.
+        A ``503`` is *not* raised, because it carries the same verdict the body
+        would: ``{"status": "unavailable", "model": null, "error": "..."}`` is the
+        backend answering the question, not failing to answer it. It is run
+        through the same mapper as the 200 so both statuses read their meaning
+        from one place -- ``status``, the field the backend actually sends --
+        rather than from two code paths that could disagree.
 
         Everything else -- a 401, a 500, a transport failure -- raises, because
         none of them carry a verdict about the provider. The use case turns those
@@ -228,9 +334,13 @@ class DrfTasksClient:
         try:
             body = await self.api_client.get_llm_health(access_token)
         except DRFAPIClientError as exc:
-            if exc.status_code == 503:
-                return LlmHealth(available=False, detail=_detail_of(exc.detail))
-            raise LlmUnavailableError(str(exc), status=exc.status_code) from exc
+            if exc.status_code != 503:
+                raise LlmUnavailableError(str(exc), status=exc.status_code) from exc
+            # The shared client keeps the error body in `detail` rather than
+            # returning it, so it is re-read from there.
+            body = exc.detail
         return map_llm_health(
-            DRFLlmHealthResponse.model_validate(_as_mapping(body, "LlmHealth"))
+            _validated(
+                DRFLlmHealthResponse, _as_mapping(body, "LlmHealth"), "LlmHealth"
+            )
         )

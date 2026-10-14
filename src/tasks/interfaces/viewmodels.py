@@ -81,13 +81,13 @@ TASK_STATUS_STYLES: dict[str, str] = {
 GOAL_STATUS_LABELS: dict[str, str] = {
     "ACTIVE": "Active",
     "COMPLETED": "Completed",
-    "CANCELLED": "Cancelled",
+    "ARCHIVED": "Archived",
 }
 
 GOAL_STATUS_STYLES: dict[str, str] = {
     "ACTIVE": "bg-blue-100 text-blue-800",
     "COMPLETED": "bg-green-100 text-green-800",
-    "CANCELLED": "bg-gray-100 text-gray-500",
+    "ARCHIVED": "bg-gray-100 text-gray-500",
 }
 
 
@@ -101,6 +101,20 @@ def _hours_label(hours: Duration | None) -> str:
     if hours is None or not hours.is_estimated:
         return "—"
     return str(hours)
+
+
+def _hours_value(hours: Duration | None) -> str:
+    """Render an estimate as a bare number, for a form input.
+
+    `Duration.__str__` appends an "h" (`"2.5h"`), which is right for a row and
+    wrong for `<input type="number">` -- the browser rejects it outright, so a
+    prefilled edit modal would post an empty estimate and silently clear the
+    user's own figure. `format(..., "f")` and not `normalize()`, because the
+    normalized form of 10.00 is "1E+1", which is also not a valid input value.
+    """
+    if hours is None or not hours.is_estimated:
+        return ""
+    return f"{hours.amount:f}"
 
 
 def _readable_date(value: date | None) -> str:
@@ -176,6 +190,19 @@ class TaskViewModel:
     status_label: str
     status_style: str
     estimated_hours_label: str
+    #: Raw hours for the edit modal's `<input type="number">`.
+    #:
+    #: Separate from `estimated_hours_label` because that one is for display --
+    #: it renders "2.5h", or an em dash when there is no estimate -- and neither
+    #: is valid in a number input. Prefilling the modal with "—" would make the
+    #: form submit a literal dash as the new estimate.
+    estimated_hours_value: str
+    #: The backend's wire value for this task's importance level, so the edit
+    #: modal's `<select>` can mark the current one selected.
+    #:
+    #: `priority_label` ("High") is for display and does not match the value the
+    #: form posts.
+    priority_value: str
     is_overwhelmed: bool
     is_overdue: bool
     is_done: bool
@@ -207,6 +234,11 @@ class TaskViewModel:
             status_label=TASK_STATUS_LABELS[task.status.name],
             status_style=TASK_STATUS_STYLES[task.status.name],
             estimated_hours_label=_hours_label(task.estimated_hours),
+            # Empty rather than the label: an unestimated task must prefill the
+            # number input with nothing, so clearing an estimate in the modal is
+            # possible at all.
+            estimated_hours_value=_hours_value(task.estimated_hours),
+            priority_value=task.priority.value,
             # `Task.is_overwhelmed` already prefers the backend's verdict and
             # falls back to the local comparison; the threshold only matters for
             # that fallback, which is why it is not consulted when the server
@@ -251,9 +283,7 @@ class GoalViewModel:
     task_count: int
 
     @classmethod
-    def from_domain(
-        cls, goal: Goal, *, today: date, task_count: int = 0
-    ) -> GoalViewModel:
+    def from_domain(cls, goal: Goal, *, today: date) -> GoalViewModel:
         description = goal.description or ""
         return cls(
             id=str(goal.id) if goal.id is not None else "",
@@ -264,7 +294,8 @@ class GoalViewModel:
             status_label=GOAL_STATUS_LABELS[goal.status.name],
             status_style=GOAL_STATUS_STYLES[goal.status.name],
             is_overdue=goal.is_overdue(today),
-            task_count=task_count,
+            # From the payload, not recomputed -- see `Goal.task_count`.
+            task_count=goal.task_count,
         )
 
     @property
@@ -452,6 +483,52 @@ class BacklogViewModel:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletedTasksViewModel:
+    """The finished-task section under the backlog.
+
+    Two things this deliberately does **not** claim, because the backend cannot
+    support either:
+
+    * **No date window, and no "last 7 days".** `TaskModel` has no
+      `completed_at` column and `TaskSerializer` sends no completion time, so
+      there is nothing to window on. Filtering on `updated_at` instead would put
+      any recently-*edited* task at the top of a list headed "recently
+      completed", which is a different and wrong statement.
+    * **No ordering claim.** The backend sorts on `-created_at, -id`, so this
+      list is newest-*created* first. The heading says "by creation date" rather
+      than "most recent first", because the latter would be a promise about a
+      field the response does not contain.
+
+    Each row carries a Delete action and no Reopen one. Reopening is not
+    available: `Task.mark_as_doing` raises `TaskAlreadyDone` for a finished task
+    (a 409), and `status` is not on `UpdateTaskSerializer` either, so there is no
+    request the backend would accept. A disabled button would only advertise a
+    feature that does not exist.
+    """
+
+    tasks: tuple[TaskViewModel, ...] = ()
+
+    @classmethod
+    def build(
+        cls,
+        tasks: list[Task],
+        *,
+        today: date,
+        threshold: Decimal = DEFAULT_OVERWHELM_THRESHOLD,
+    ) -> CompletedTasksViewModel:
+        return cls(
+            tasks=tuple(
+                TaskViewModel.from_domain(task, today=today, threshold=threshold)
+                for task in tasks
+            )
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.tasks
+
+
+@dataclass(frozen=True, slots=True)
 class GoalsViewModel:
     """Everything `tasks/goals.html` renders."""
 
@@ -477,6 +554,7 @@ class GoalsViewModel:
 __all__ = [
     "DEFAULT_MAX_DAILY_HOURS",
     "BacklogViewModel",
+    "CompletedTasksViewModel",
     "DailyPlanViewModel",
     "EmptyDailyPlanViewModel",
     "GoalViewModel",

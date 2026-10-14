@@ -13,7 +13,6 @@ from src.tasks.domain.exceptions import InvalidTaskError, InvalidTasksInputError
 from src.tasks.domain.value_objects import (
     Duration,
     GoalId,
-    Importance,
     Priority,
 )
 
@@ -30,8 +29,23 @@ class CreateTaskUseCase:
     concern -- parsing loose strings and rejecting values that are meaningless
     rather than merely malformed.
 
-    ``due_date`` may not be in the future. That check needs "today", so it goes
-    through the injected `Clock` and stays testable.
+    ``due_date`` may not be in the past, and today is allowed. A task is work
+    still to be done, so one dated before the day it was written down was either
+    a typo in the year, or work the user already let lapse and is now recording
+    for the first time. Both are worth a deliberate re-entry rather than a
+    backlog row that opens already flagged overdue.
+
+    Allowing today keeps the common case working -- "do this before I go home" is
+    the single most frequent due date there is, and a rule that made it invalid
+    would be one people learned to work around by picking tomorrow.
+
+    Note the consequence: with past dates rejected, a task can only become
+    overdue by the clock reaching its due date, never by being created that way.
+    That is why `Task.is_overdue` compares against "today" rather than being
+    evaluated at creation.
+
+    The check needs "today", so it goes through the injected `Clock` and stays
+    testable.
     """
 
     tasks_client: TasksApiClient
@@ -49,10 +63,17 @@ class CreateTaskUseCase:
         description: str | None = None,
         goal_id: GoalId | None = None,
         due_date: date | None = None,
-        importance: int = 1,
         priority: Priority = Priority.MEDIUM,
         estimated_hours: Decimal | str | None = None,
     ) -> Task:
+        """Create a task from a validated form.
+
+        `priority` is the only importance-like input: it maps onto the backend's
+        `importance` field, which is a low/medium/high choice. The 1-5
+        `Task.importance` is derived from it rather than accepted, because the
+        backend has no field to store a number -- accepting one would let a
+        caller set a value the API silently drops.
+        """
         if not isinstance(name, str) or not name.strip():
             raise InvalidTasksInputError("Task name is required.")
 
@@ -68,11 +89,13 @@ class CreateTaskUseCase:
         if due_date is not None:
             if type(due_date) is not date:
                 raise InvalidTasksInputError("due_date must be a date.")
-            if due_date > self.clock.today():
-                raise InvalidTasksInputError("due_date cannot be in the future.")
+            # Strictly less-than, so today is allowed through. A `>=` here
+            # would reject today and every future date while admitting every past
+            # one -- the exact opposite of what the message says.
+            if due_date < self.clock.today():
+                raise InvalidTasksInputError("due_date cannot be in the past.")
 
         duration = self._parse_estimated_hours(estimated_hours)
-        resolved_importance = self._parse_importance(importance)
         resolved_description = self._normalize_description(description)
 
         # Every invariant is satisfied by now, so `Task.create` cannot fail for a
@@ -83,7 +106,7 @@ class CreateTaskUseCase:
             goal_id=goal_id,
             description=resolved_description,
             due_date=due_date,
-            importance=resolved_importance,
+            importance=priority.importance,
             priority=priority,
             estimated_hours=duration,
         )
@@ -123,15 +146,6 @@ class CreateTaskUseCase:
                 f"An estimate cannot exceed {self.max_estimated_hours} hours."
             )
         return duration
-
-    @staticmethod
-    def _parse_importance(importance: int) -> Importance:
-        try:
-            return Importance(importance)
-        except InvalidTaskError as exc:
-            raise InvalidTasksInputError(
-                f"Importance must be between 1 and 5, not {importance!r}."
-            ) from exc
 
     @staticmethod
     def _normalize_description(description: str | None) -> str | None:

@@ -1,10 +1,13 @@
 """Async HTTP client for the DRF backend."""
 
+from logging import getLogger
 from typing import Any
 
 import httpx
 
 from src.shared.domain.exceptions import AuthenticationError, DomainException
+
+logger = getLogger()
 
 
 class DRFAPIClientError(DomainException):
@@ -545,6 +548,85 @@ class DRFAPIClient:
             )
         return body
 
+    async def list_tasks_by_status(self, access_token: str, status_filter: str) -> Any:
+        """List the caller's tasks narrowed to one status.
+
+        `status_filter` is sent verbatim and must be one of the backend's
+        `TASK_STATUS_CHOICES`: **``todo`` / ``doing`` / ``done``**. The obvious
+        guesses are wrong in both directions -- there is no ``completed`` and no
+        ``pending``, because those are the words the *frontend* uses for the two
+        states the backend calls ``done`` and ``todo``. An unrecognised value is
+        a 400 ("Unknown task status."), which is why the caller passes an enum
+        member rather than a hand-written string.
+        """
+        status, body = await self._request(
+            "GET",
+            "/tasks/tasks/",
+            access_token=access_token,
+            params={"status": status_filter},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 400:
+            raise ValidationError(
+                f"Unknown task status filter: {status_filter!r}",
+                status_code=400,
+                detail=body,
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list tasks by status", status_code=status, detail=body
+            )
+        return body
+
+    async def update_task(self, access_token: str, task_id: str, payload: dict) -> Any:
+        """Apply a partial update and return the reloaded task.
+
+        PATCH rather than PUT, and the distinction is the whole point of the
+        method: `UpdateTaskSerializer` is used with `partial=True`, so an absent
+        key leaves the stored value alone and only the keys the caller sent are
+        written. A PUT would mean every omitted field had been cleared.
+        """
+        status, body = await self._request(
+            "PATCH",
+            f"/tasks/tasks/{task_id}/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError("Task update failed", status_code=status, detail=body)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to update task", status_code=status, detail=body
+            )
+        return body
+
+    async def delete_task(self, access_token: str, task_id: str) -> None:
+        """Delete one task. Returns `None`; the backend answers `204`.
+
+        A 404 is raised rather than swallowed, deliberately. The caller has to
+        be able to say "that task no longer exists" as distinct from "that task
+        was deleted" -- see `DeleteTaskUseCase`.
+        """
+        status, body = await self._request(
+            "DELETE", f"/tasks/tasks/{task_id}/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError("Task delete failed", status_code=status, detail=body)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to delete task", status_code=status, detail=body
+            )
+        return None
+
     async def get_task(self, access_token: str, task_id: str) -> Any:
         status, body = await self._request(
             "GET", f"/tasks/tasks/{task_id}/", access_token=access_token
@@ -560,6 +642,8 @@ class DRFAPIClient:
         return body
 
     async def create_task(self, access_token: str, payload: dict) -> Any:
+        print(f"payload for create task - {payload}")
+        logger.info(f"payload for create task - {payload}")
         status, body = await self._request(
             "POST", "/tasks/tasks/", access_token=access_token, json_data=payload
         )

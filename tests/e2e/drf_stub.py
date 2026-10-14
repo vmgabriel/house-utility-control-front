@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -132,6 +133,10 @@ DEFAULT_OVERVIEW: dict = {
 
 #: An overview the backend sends when the user has no data at all.
 EMPTY_OVERVIEW: dict = {"today": None, "this_week": None, "this_month": None}
+
+#: The model name the health probe reports. Only ever shown in a tooltip, but
+#: pinned so an assertion on it would not be asserting on a random string.
+DEFAULT_LLM_MODEL: str = "qwen2.5:3b"
 
 #: The user the stubbed `/users/me/` endpoint reports.
 DEFAULT_USER: dict = {
@@ -456,9 +461,8 @@ class StubBackend:
         self.on_call("GET", "/tasks/daily-plans/", self._daily_plans_response)
         self.on_call("GET", "/tasks/tasks/llm-health/", self._llm_health_response)
         self.on_call("POST", "/tasks/tasks/<id>/evaluate/", self._llm_trigger_response)
-        self.on_call(
-            "POST", "/tasks/tasks/<id>/decompose/", self._llm_trigger_response
-        )
+        self.on_call("POST", "/tasks/tasks/<id>/decompose/", self._llm_trigger_response)
+        self.on_call("*", "/tasks/tasks/<id>/", self._task_detail_response)
 
     def _item_response(self, recorded: RecordedRequest) -> StubResponse:
         transaction_id = recorded.path.removeprefix("/transactions/").removesuffix("/")
@@ -480,8 +484,57 @@ class StubBackend:
 
     # -- tasks ------------------------------------------------------------
 
-    def _tasks_list_response(self, _recorded: RecordedRequest) -> StubResponse:
-        return StubResponse(200, list(self.tasks))
+    def _tasks_list_response(self, recorded: RecordedRequest) -> StubResponse:
+        """Serve the task list, honouring the status filter.
+
+        `TaskFilterQuerySerializer` declares `status` as a choice over
+        ``TASK_STATUS_CHOICES`` -- ``todo`` / ``doing`` / ``done``. A stub that
+        ignored the filter would serve the whole backlog as the "completed"
+        list, and every assertion about the finished-tasks section would pass
+        for the wrong reason. An unrecognised value answers 400 exactly as the
+        backend does, so a client that sent ``completed`` would fail here rather
+        than quietly appear to work.
+        """
+        status = recorded.query.get("status")
+        if status is None:
+            return StubResponse(200, list(self.tasks))
+        if status not in {"todo", "doing", "done"}:
+            return StubResponse(400, {"detail": "Unknown task status."})
+        return StubResponse(
+            200, [row for row in self.tasks if row.get("status") == status]
+        )
+
+    def _task_detail_response(self, recorded: RecordedRequest) -> StubResponse:
+        """GET/PATCH/DELETE on one task, as `TaskViewSet` exposes them.
+
+        Registered with `"*"` because the collection routes are matched first,
+        so this only ever sees a detail path.
+        """
+        task_id = recorded.path.removeprefix("/tasks/tasks/").removesuffix("/")
+        row = next((t for t in self.tasks if t.get("id") == task_id), None)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        if recorded.method == "GET":
+            return StubResponse(200, row)
+        if recorded.method == "DELETE":
+            self.tasks.remove(row)
+            # 204 with an empty body, as the backend's `destroy` answers.
+            return StubResponse(204)
+        if recorded.method in {"PATCH", "PUT"}:
+            payload = recorded.json if isinstance(recorded.json, dict) else {}
+            # `partial=True`, so only the keys actually sent are written --
+            # absent keys leave the stored column alone. Mirrored here because a
+            # stub that overwrote everything would make a BFF sending the whole
+            # entity look correct.
+            for key, value in payload.items():
+                if key == "importance":
+                    row["importance"] = value
+                elif key == "estimated_hours" and value is None:
+                    row["estimated_hours"] = "0.00"
+                else:
+                    row[key] = value
+            return StubResponse(200, row)
+        return StubResponse(405, {"detail": "Method not allowed."})
 
     def _goals_list_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, list(self.goals))
@@ -490,14 +543,21 @@ class StubBackend:
         return StubResponse(200, list(self.daily_plans))
 
     def _llm_health_response(self, _recorded: RecordedRequest) -> StubResponse:
-        # 503 rather than 200 with `available: false`: that is how the real
-        # backend reports an unreachable provider, and the BFF maps the two
-        # differently -- red for "the provider is down", amber for "we could
-        # not find out". Stubbing it the easy way would let that distinction go
-        # untested.
+        # The shape is `LlmHealthSerializer`'s, confirmed against the backend:
+        # 200 {"status": "ok", "model": ...} and 503 {"status": "unavailable",
+        # "model": null, "error": ...}. There is no `available` boolean, and a
+        # stub that invented one would hide a mapper written against the wrong
+        # contract -- which is exactly what happened before this was corrected.
         if self.llm_available:
-            return StubResponse(200, {"available": True, "detail": ""})
-        return StubResponse(503, {"detail": "The LLM provider is unreachable."})
+            return StubResponse(200, {"status": "ok", "model": DEFAULT_LLM_MODEL})
+        return StubResponse(
+            503,
+            {
+                "status": "unavailable",
+                "model": None,
+                "error": "The LLM provider is unreachable.",
+            },
+        )
 
     def _llm_trigger_response(self, _recorded: RecordedRequest) -> StubResponse:
         if not self.llm_available:
@@ -515,7 +575,7 @@ class StubBackend:
             "description": payload.get("description"),
             "goal_id": payload.get("goal_id"),
             "due_date": payload.get("due_date"),
-            "importance": payload.get("importance", 1),
+            "importance": payload.get("importance", "medium"),
             "priority": payload.get("priority", "medium"),
             "status": "todo",
             "estimated_hours": payload.get("estimated_hours"),
@@ -562,6 +622,16 @@ class StubBackend:
                 route = self._routes.get(("*", "/users/<id>/"))
             if route is None and path.startswith("/users/") and path.count("/") == 4:
                 route = self._routes.get(("*", "/users/<id>/plan/"))
+            if (
+                route is None
+                and path.startswith("/tasks/tasks/")
+                and path.count("/") == 4
+            ):
+                # The task detail route. Reached only by fallback, so the exact
+                # routes registered above still win -- which matters for
+                # `/tasks/tasks/llm-health/`, which has the same shape and is
+                # matched first because it was registered by exact path.
+                route = self._routes.get(("*", "/tasks/tasks/<id>/"))
 
             if route is None:
                 return StubResponse(404, {"detail": f"Unstubbed: {method} {path}"})
@@ -601,6 +671,41 @@ class StubDRFServer:
         merged = dict(DEFAULT_PROFILE)
         merged.update(profile)
         self.backend.profile = merged
+
+    def seed_tasks(self, *tasks: dict, goals: list[dict] | None = None) -> None:
+        """Replace the task and goal rows the tasks endpoints serve.
+
+        Reached through `seed_tasks` rather than by assigning `stub.tasks`
+        directly: `StubDRFServer` and `StubBackend` are different objects, and an
+        assignment on the former sets an attribute nothing reads. `tasks` is a
+        read-only property below so that mistake raises instead of silently
+        serving an empty list.
+
+        **Deep-copied, and that is load-bearing.** The detail handlers mutate the
+        stored rows in place -- a PATCH has to write through to the row the list
+        endpoint serves, or an edit would vanish on the next page load. A test
+        that seeded a module-level payload dict would therefore have that
+        constant rewritten by the first edit, and every later test using it
+        would run against corrupted fixture data. The copy keeps each test's
+        rows private to that test.
+        """
+        self.backend.tasks = [deepcopy(task) for task in tasks]
+        if goals is not None:
+            self.backend.goals = [deepcopy(goal) for goal in goals]
+
+    @property
+    def tasks(self) -> list[dict]:
+        return self.backend.tasks
+
+    @property
+    def goals(self) -> list[dict]:
+        return self.backend.goals
+
+    @property
+    def requests(self) -> list[RecordedRequest]:
+        """Every request the stub has seen. On the server, not the backend,
+        because that is the object a test is handed."""
+        return self.backend.requests
 
     def require_token(self, token: str) -> None:
         self.backend.require_token(token)

@@ -42,6 +42,7 @@ from src.shared.http.drf_client import ServiceUnavailableError
 from src.tasks.domain.entities import DEFAULT_OVERWHELM_THRESHOLD
 from src.tasks.domain.exceptions import LlmUnavailableError, TaskNotFoundError
 from src.tasks.domain.value_objects import (
+    Duration,
     GoalId,
     LlmHealth,
     Priority,
@@ -50,10 +51,10 @@ from src.tasks.domain.value_objects import (
 from src.tasks.interfaces.viewmodels import (
     PRIORITY_LABELS,
     BacklogViewModel,
+    CompletedTasksViewModel,
     DailyPlanViewModel,
     EmptyDailyPlanViewModel,
     GoalsViewModel,
-    GoalViewModel,
     LlmHealthViewModel,
     TaskViewModel,
 )
@@ -173,15 +174,38 @@ def _parse_priority(raw: str | None) -> Priority:
         raise DomainException(f"Priority must be one of: {allowed}.") from exc
 
 
-def _parse_importance(raw: str | None) -> int:
-    """Parse the importance form field, defaulting to the lowest step."""
+def _parse_hours(raw: str | None) -> Duration | None:
+    """Parse the estimated-hours form field, mapping a blank to "no estimate".
+
+    An empty input is `None` rather than an error, and on the edit path `None`
+    is a *value*: it means "this task has no estimate" and is sent as an explicit
+    ``0.00`` rather than as an absent key, which PATCH's ``partial=True`` would
+    read as "leave it alone". See `task_edits_to_payload`.
+
+    A non-numeric value raises. A negative one does not need its own branch --
+    `Duration` already refuses it with a message naming the problem, and that
+    `InvalidTaskError` is a `DomainException`, so the view flashes it verbatim.
+    """
     text = (raw or "").strip()
     if not text:
-        return 1
+        return None
     try:
-        return int(text)
-    except ValueError as exc:
-        raise DomainException("Importance must be a number from 1 to 5.") from exc
+        return Duration(Decimal(text))
+    except (InvalidOperation, ArithmeticError, ValueError) as exc:
+        raise DomainException(
+            "Estimated hours must be a positive number of hours."
+        ) from exc
+
+
+def _text_field(raw: str | None) -> str:
+    """Read a text form field as `""` when it was left blank.
+
+    `request.form.get` already answers `None` for an absent key, which on the
+    edit path means "don't touch this column" -- so a blank input has to be
+    turned into an empty string explicitly, or clearing a description would
+    silently leave it in place.
+    """
+    return (raw or "").strip()
 
 
 def _parse_task_id(raw: str) -> TaskId:
@@ -210,13 +234,15 @@ async def backlog():
     today = current_app.clock.today()
     threshold = _overwhelm_threshold()
 
-    # Two independent reads. `return_exceptions=True` for the goals, because the
-    # goal list only populates a filter and a modal's optional field: a failure
-    # there must cost the user the filter, not the page. The backlog is not
+    # Three independent reads. `return_exceptions=True` for the two optional
+    # ones: the goal list only populates a filter and a modal's field, and the
+    # finished-task list is a secondary section below the fold -- a failure in
+    # either must cost the user that panel, not the page. The backlog is not
     # optional, so its failure propagates to the 503 handler.
-    tasks, goals = await asyncio.gather(
+    tasks, goals, completed = await asyncio.gather(
         current_app.get_backlog_use_case.execute(access_token),
         current_app.get_goals_use_case.execute(access_token),
+        current_app.get_completed_tasks_use_case.execute(access_token),
         return_exceptions=True,
     )
     if isinstance(tasks, BaseException):
@@ -226,12 +252,28 @@ async def backlog():
         current_app.logger.warning(
             "Goals unavailable for the backlog page: %s", type(goals).__name__
         )
+    completed_list: list = (
+        [] if isinstance(completed, BaseException) else list(completed)
+    )
+    if isinstance(completed, BaseException):
+        current_app.logger.warning(
+            "Completed tasks unavailable for the backlog page: %s",
+            type(completed).__name__,
+        )
 
     return render_template(
         "tasks/backlog.html",
         backlog=BacklogViewModel.build(
             tasks, today=today, goals=goal_list, threshold=threshold
         ),
+        completed=CompletedTasksViewModel.build(
+            completed_list, today=today, threshold=threshold
+        ),
+        # True when the completed section is hidden because the read failed,
+        # rather than because the user has finished nothing. The two warrant
+        # different words: an empty list is good news, a failed read is a bug
+        # the user would otherwise read as "you finished nothing today".
+        completed_unavailable=isinstance(completed, BaseException),
         priorities=[
             (member.value, PRIORITY_LABELS[member.name]) for member in Priority
         ],
@@ -243,42 +285,23 @@ async def backlog():
 async def goals():
     """The goal list, with the count of tasks filed under each.
 
-    The task counts are joined from the backlog rather than requested per goal:
-    the backend's goal payload does not carry them, and one filtered backlog read
-    is cheaper than one request per goal on the page.
+    ``GoalSerializer`` carries ``task_count``, so the count is read from the
+    payload rather than recomputed from the backlog. An earlier version fetched
+    the whole backlog and joined on ``goal_id`` here; that was a second
+    definition of the same number, free to disagree with the one the backend
+    already stored, and it cost an extra full-backlog request on every visit to
+    this page.
     """
     access_token = _access_token()
     if not access_token:
         return redirect(url_for("auth.login"))
 
     today = current_app.clock.today()
-    goal_list, tasks = await asyncio.gather(
-        current_app.get_goals_use_case.execute(access_token),
-        current_app.get_backlog_use_case.execute(access_token),
-    )
-
-    counts: dict[str, int] = {}
-    for task in tasks:
-        if task.goal_id is not None:
-            key = str(task.goal_id)
-            counts[key] = counts.get(key, 0) + 1
+    goal_list = await current_app.get_goals_use_case.execute(access_token)
 
     return render_template(
         "tasks/goals.html",
-        goals=_goals_model(goal_list, counts, today),
-        today=today.isoformat(),
-    )
-
-
-def _goals_model(goal_list, counts: dict[str, int], today: date) -> GoalsViewModel:
-    """Join each goal with its open task count, preserving the backend's order."""
-    return GoalsViewModel(
-        goals=tuple(
-            GoalViewModel.from_domain(
-                goal, today=today, task_count=counts.get(str(goal.id), 0)
-            )
-            for goal in goal_list
-        ),
+        goals=GoalsViewModel.build(goal_list, today=today),
         today=today.isoformat(),
     )
 
@@ -371,7 +394,8 @@ async def create_task():
             description=request.form.get("description"),
             goal_id=_parse_goal_id(request.form.get("goal_id")),
             due_date=_parse_date(request.form.get("due_date"), "due_date"),
-            importance=_parse_importance(request.form.get("importance")),
+            # The form posts this as `priority`; it becomes the backend's
+            # `importance`. See `task_to_payload`.
             priority=_parse_priority(request.form.get("priority")),
             estimated_hours=request.form.get("estimated_hours"),
         )
@@ -380,6 +404,88 @@ async def create_task():
     else:
         flash(f"Task created: {task.name}.", "success")
     return redirect(url_for("tasks.backlog"))
+
+
+@tasks_bp.route("/<uuid:task_id>/edit/", methods=["POST"])
+async def update_task(task_id):
+    """Apply an edit to a task.
+
+    A plain form post that redirects, like `create_task`: the modal's form is a
+    real `<form>` with an action, so the page works without JavaScript and the
+    redirect is what puts the user back on a freshly rendered backlog.
+
+    All five fields the backend's `UpdateTaskSerializer` accepts are sent on
+    every submit, including empty ones. That is not sloppiness -- it is how a
+    cleared due date or a removed description reaches the backend: PATCH is
+    applied with ``partial=True``, so an *absent* key means "leave it alone",
+    and only an explicit value (or `null`) changes anything. A form that omitted
+    blank fields would make those three impossible to clear.
+
+    ``goal_id`` is deliberately absent from this form. The backend's update
+    serializer does not accept it -- filing a task under a goal is
+    ``POST /goals/{id}/link-task/`` -- so a goal field here would render a
+    success message for a change that was silently discarded.
+    """
+    access_token = _access_token()
+    if not access_token:
+        return redirect(url_for("auth.login"))
+    if not _require_csrf():
+        flash("Invalid CSRF token.", "error")
+        return redirect(url_for("tasks.backlog"))
+
+    try:
+        task = await current_app.update_task_use_case.execute(
+            access_token,
+            _parse_task_id(str(task_id)),
+            # The form always posts all five fields, so every one of them is
+            # passed explicitly -- including the blank ones, which are
+            # instructions to clear rather than fields to leave alone. See
+            # `UpdateTaskUseCase.execute` for why the distinction is not
+            # something this call site may infer.
+            name=_text_field(request.form.get("name")),
+            description=_text_field(request.form.get("description")),
+            due_date=_parse_date(request.form.get("due_date"), "due_date"),
+            priority=_parse_priority(request.form.get("priority")),
+            estimated_hours=_parse_hours(request.form.get("estimated_hours")),
+        )
+    except TaskNotFoundError:
+        flash("That task no longer exists.", "error")
+    except DomainException as exc:
+        flash(str(exc), "error")
+    else:
+        flash(f"Task updated: {task.name}.", "success")
+    return redirect(_back_target())
+
+
+@tasks_bp.route("/<uuid:task_id>/delete/", methods=["POST"])
+async def delete_task(task_id):
+    """Delete a task after the confirmation modal.
+
+    POST-only and CSRF-protected, like every other mutation here, despite being
+    a destructive action with an idempotent effect -- a GET link that deletes
+    would be triggerable by any prefetch or crawler that followed it.
+    """
+    access_token = _access_token()
+    if not access_token:
+        return redirect(url_for("auth.login"))
+    if not _require_csrf():
+        flash("Invalid CSRF token.", "error")
+        return redirect(url_for("tasks.backlog"))
+
+    try:
+        await current_app.delete_task_use_case.execute(
+            access_token, _parse_task_id(str(task_id))
+        )
+    except TaskNotFoundError:
+        # Worded differently from the success case on purpose: the row the user
+        # confirmed was already gone, which means their view was stale, and
+        # telling them "Task deleted" would hide that.
+        flash("That task no longer exists.", "error")
+    except DomainException as exc:
+        flash(str(exc), "error")
+    else:
+        flash("Task deleted.", "success")
+    return redirect(_back_target())
 
 
 async def _run_llm_action(

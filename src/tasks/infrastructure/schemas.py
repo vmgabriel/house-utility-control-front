@@ -19,6 +19,20 @@ The divergence this context inherits:
   local threshold comparison. Defaulting it to ``False`` would silently
   downgrade "unknown" into "fine", which is the exact badge the user relies on.
 
+**Two fields this context needs and the API does not have.** Recorded here
+rather than invented, because a schema that declares a field the serializer does
+not send is exactly the failure mode rule 7 exists to prevent -- it would turn a
+missing backend feature into a 500 rather than a visible gap:
+
+* ``completed_at``. ``TaskModel`` has no such column and ``TaskSerializer``
+  exposes no completion timestamp. There is consequently **no seven-day window
+  on completed tasks**: ``created_at`` and ``updated_at`` are both "when the row
+  last changed", not "when it was finished", and every status transition and
+  every content edit moves ``updated_at``. See ``GetCompletedTasksUseCase``.
+* ``goal_id`` is present but **read-only**: it is absent from
+  ``UpdateTaskSerializer``, and filing a task under a goal goes through
+  ``POST /goals/{id}/link-task/`` instead.
+
 ``extra="allow"`` everywhere: the backend adds fields without a BFF release, and
 an unknown field must not fail the page.
 """
@@ -35,12 +49,22 @@ class DRFTaskResponse(BaseModel):
 
     id: str
     name: str
-    description: str | None = None
     #: Null for a task that is not filed under a goal -- see the module docstring.
     goal_id: str | None = None
+    #: `TaskSerializer` declares ``description`` with ``allow_blank=True``, so
+    #: the API sends `""` rather than omitting it.
+    description: str = ""
     due_date: str | None = None
-    importance: int = 1
-    priority: str = "medium"
+    #: **A `low`/`medium`/`high` choice, not a number.** `TaskSerializer`
+    #: declares `importance = ChoiceField(choices=PRIORITY_CHOICES)` and the
+    #: backend's own `Task.importance` is typed `Priority`.
+    #:
+    #: There is no separate wire field called `priority` -- "importance" *is* the
+    #: priority level, and an earlier version of this schema declared it as an
+    #: integer 1-5 scale that the API has never sent. Every task therefore failed
+    #: to validate with `Input should be a valid integer, unable to parse string
+    #: as an integer`.
+    importance: str = "medium"
     status: str = "todo"
     #: DRF serialises decimals as strings by default, so this is ``"2.50"``.
     estimated_hours: str | None = None
@@ -51,7 +75,13 @@ class DRFTaskResponse(BaseModel):
 
 
 class DRFGoalResponse(BaseModel):
-    """One goal."""
+    """One goal.
+
+    ``task_count`` is present on ``GoalSerializer``, so the goals page reads it
+    directly rather than joining the backlog to compute it. Kept as ``int | None``
+    because it is absent from any goal payload produced by a path that does not go
+    through that serializer.
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -60,41 +90,74 @@ class DRFGoalResponse(BaseModel):
     description: str | None = None
     due_date: str | None = None
     status: str = "active"
+    task_count: int | None = None
 
 
 class DRFDailyPlanResponse(BaseModel):
     """One day's plan.
 
-    ``task_ids`` rather than nested task objects: the endpoint returns the ids
-    the day is built from, and the BFF joins them against the backlog it already
-    fetched. If the backend ever starts nesting the tasks, the extra fields are
-    kept by ``extra="allow"`` and the join simply becomes redundant rather than
-    breaking.
+    ``tasks`` is the **nested** list of full task objects, confirmed against
+    ``DailyPlanSerializer`` in the backend repository -- it declares
+    ``tasks = TaskSerializer(many=True, read_only=True)``. An earlier version of
+    this schema expected a flat ``task_ids`` array, which the API never sends;
+    every day therefore mapped to an empty task list and the daily page rendered
+    an empty plan with no error anywhere.
+
+    Typed as ``list[DRFTaskResponse]``, so a nested task is validated by the same
+    schema a standalone one is. Validating only the ids and pulling the rest from
+    the backlog would let a malformed nested task pass silently here and fail
+    later, in a different request, with a less obvious message.
+
+    ``model_rebuild()`` at the bottom resolves the forward reference; the class
+    is defined after this one, and pydantic needs it resolved to build.
     """
 
     model_config = ConfigDict(extra="allow")
 
     id: str
     date: str
-    task_ids: list[str] = []
+    tasks: list[DRFTaskResponse] = []
     #: The backend's own sum of the scheduled tasks; mapped, never recomputed.
     total_hours: str | None = None
+    #: Whether the backend considers the day full. Display only; the BFF does
+    #: not act on it, so it is parsed for completeness rather than used.
+    is_full: bool = False
     generated_by_llm: bool = False
+
+
+#: Resolves `DRFDailyPlanResponse.tasks -> list[DRFTaskResponse]`, which is a
+#: forward reference because the daily-plan class is declared first.
+DRFDailyPlanResponse.model_rebuild()
 
 
 class DRFLlmHealthResponse(BaseModel):
     """The LLM health probe's body.
 
-    ``available`` is required: a health check that cannot answer is an error
-    status, not a body, and is translated into `LlmHealth.indeterminate` before
-    it ever reaches here. ``detail`` is free text from the provider and is
-    treated as untrusted -- it is shown in a tooltip, never as markup.
+    Confirmed against ``LlmHealthSerializer`` and ``TaskViewSet.llm_health`` in
+    the backend repository. Note that this one schema covers **both** statuses,
+    because the 503 carries this shape too rather than DRF's usual
+    ``{"detail": ...}``:
+
+    * reachable      -> ``200 {"status": "ok", "model": "qwen2.5:3b"}``
+    * unreachable    -> ``503 {"status": "unavailable", "model": null, "error": ...}``
+
+    There is **no ``available`` boolean**. An earlier version of this schema
+    invented one, and the first real request against a live backend failed with
+    a pydantic ``Field required`` on ``available`` -- a 500 in the navbar of
+    every page, because the navbar polls this endpoint on every page load. The
+    enum below is the actual wire contract; ``status`` is typed as ``str``
+    rather than an enum on purpose, so an unrecognised value is *reported* by
+    the mapper instead of being rejected here as a schema error.
+
+    ``error`` is free text from the provider and is treated as untrusted -- it
+    reaches a tooltip, never markup.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    available: bool
-    detail: str | None = None
+    status: str
+    model: str | None = None
+    error: str | None = None
 
 
 __all__ = [

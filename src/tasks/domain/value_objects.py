@@ -20,8 +20,10 @@ contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from typing import TypeVar, Union
 from uuid import UUID
 
 from src.tasks.domain.exceptions import (
@@ -29,6 +31,14 @@ from src.tasks.domain.exceptions import (
     InvalidGoalError,
     InvalidTaskError,
 )
+
+#: Mirrors the backend's `MAX_NAME_LENGTH` / `MAX_DESCRIPTION_LENGTH`. They live
+#: here rather than on the entities because `TaskEdits` has to enforce the same
+#: limits on the edit path, and the entities import this module -- a limit
+#: defined over there could not be imported from here without a cycle. The
+#: entities re-export both names, so `entities.MAX_NAME_LENGTH` still resolves.
+MAX_NAME_LENGTH = 200
+MAX_DESCRIPTION_LENGTH = 5000
 
 #: Two-decimal quantum for hour estimates. Fractions of an hour are the norm
 #: here ("30 minutes"), and quarters are the practical granularity, so anything
@@ -154,7 +164,12 @@ class UserId:
 # Enumerations
 # --------------------------------------------------------------------------- #
 class Priority(str, Enum):
-    """How urgent a task is, independent of its ``importance`` score.
+    """How urgent a task is.
+
+    This is the backend's ``importance`` field -- ``CreateTaskSerializer``
+    declares it as a choice over low/medium/high, and the backend's own
+    ``Task.importance`` is typed ``Priority``. There is no wire field called
+    ``priority`` and no separate numeric one; this is the single level.
 
     ``str`` mixin rather than ``StrEnum``: the infrastructure layer serialises
     these members straight to the DRF JSON API, and AGENTS.md warns explicitly
@@ -165,6 +180,19 @@ class Priority(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
+    @property
+    def importance(self) -> Importance:
+        """The 1-5 dot-bar value this level renders as.
+
+        A frontend-only rendering with no wire representation -- the backend has
+        no field for it. Anchoring the ends and spreading the middle keeps the
+        dots reading monotonically with the badge beside them, which is the only
+        property the row depends on. It lives here rather than in the mapper
+        because the create path needs it too, and two copies of one mapping is
+        how the dots and the badge start disagreeing.
+        """
+        return _PRIORITY_IMPORTANCE[self]
 
 
 class TaskStatus(str, Enum):
@@ -182,14 +210,16 @@ class TaskStatus(str, Enum):
 class GoalStatus(str, Enum):
     """Lifecycle of a goal, which outlives the tasks filed under it.
 
-    ``ACTIVE`` and ``COMPLETED`` are the two the API actually reports;
-    ``CANCELLED`` is modelled because a goal the user abandons is a real state
-    and mapping it to "active" would keep it in the active list forever.
+    Mirrors the backend's ``GOAL_STATUS_CHOICES`` exactly: ``active``,
+    ``completed``, ``archived``. An earlier version modelled the third state as
+    ``cancelled``, which the API never sends -- and since the mapper reports an
+    unknown member rather than coercing it, every archived goal would have
+    failed to map.
     """
 
     ACTIVE = "active"
     COMPLETED = "completed"
-    CANCELLED = "cancelled"
+    ARCHIVED = "archived"
 
 
 # --------------------------------------------------------------------------- #
@@ -242,6 +272,13 @@ class Duration:
         return f"{self.amount.normalize():f}h"
 
 
+#: Backend priority level -> the frontend's 1-5 importance dots. Consumed by
+#: `Priority.importance`. Declared empty and populated at the bottom, because
+#: `Importance` is defined after `Priority` and the property body only runs at
+#: call time.
+_PRIORITY_IMPORTANCE: dict[Priority, Importance] = {}  # noqa: F821
+
+
 @dataclass(frozen=True, slots=True)
 class Importance:
     """A 1-5 importance score.
@@ -269,6 +306,24 @@ class Importance:
         return str(self.value)
 
 
+def normalize_name(raw: object, limit: int, label: str, error: type[Exception]) -> str:
+    """Collapse whitespace in a name, rejecting an empty or over-long result.
+
+    Shared by `Task` and `Goal` rather than duplicated as a `_clean_name` static
+    method on each. Two copies of one rule is how the create path and the edit
+    path end up accepting different names, and the divergence would only surface
+    as a 400 from the backend on one of them.
+    """
+    if not isinstance(raw, str):
+        raise error(f"{label} must be a string.")
+    normalized = " ".join(raw.split())
+    if not normalized:
+        raise error(f"{label} cannot be empty.")
+    if len(normalized) > limit:
+        raise error(f"{label} cannot exceed {limit} characters.")
+    return normalized
+
+
 def normalize_markdown(raw: object, limit: int, label: str, error: type[Exception]):
     """Trim a markdown description and map an empty result to `None`.
 
@@ -292,6 +347,16 @@ def normalize_markdown(raw: object, limit: int, label: str, error: type[Exceptio
     if len(normalized) > limit:
         raise error(f"{label} cannot exceed {limit} characters.")
     return normalized
+
+
+#: Populated after `Importance` is defined; `Priority.importance` reads it.
+_PRIORITY_IMPORTANCE.update(
+    {
+        Priority.LOW: Importance(1),
+        Priority.MEDIUM: Importance(3),
+        Priority.HIGH: Importance(5),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,11 +413,155 @@ class LlmHealth:
         return "🟢" if self.available else "🔴"
 
 
+# --------------------------------------------------------------------------- #
+# Partial updates
+# --------------------------------------------------------------------------- #
+class Unset:
+    """The absence of a value in a partial update.
+
+    `None` cannot mean "leave this alone" here, because on every one of these
+    five fields `None` is a real, distinct instruction: an empty description, a
+    cleared due date, an unestimated task. Collapsing "unchanged" into `None`
+    would make it impossible to clear a due date without also silently clearing
+    the name.
+
+    This mirrors the backend's own `UNSET` sentinel, which `UpdateTaskSerializer`
+    depends on for exactly the same reason: a key that is absent from the request
+    leaves the stored value alone, and a key that is explicitly `null` clears the
+    column. Sending the distinction is not a BFF invention -- it is the contract.
+
+    Falsy so that a bare `if edits.name:` reads as "was it set?" correctly in the
+    one place that has to work generically, but every call site here still tests
+    `isinstance(..., Unset)` explicitly, because `False`-ness and `is None` are
+    different questions.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+    def __copy__(self) -> Unset:
+        return self
+
+    def __deepcopy__(self, memo: dict) -> Unset:
+        return self
+
+
+#: The singleton. Module-level so `isinstance(x, Unset)` and `x is UNSET` agree,
+#: and so every default argument shares one identity.
+UNSET = Unset()
+
+#: The single "a value, or not sent" parameter type, so every `TaskEdits` field
+#: says the same thing at its annotation.
+T = TypeVar("T")
+
+#: One field's state in a `TaskEdits`: either a real value, or "not sent".
+#:
+#: `T | None` appears in three of these fields, so the alias is what makes the
+#: three-way distinction (set / cleared / untouched) readable at the annotation.
+UnsetOr = Union[T, Unset]  # noqa: UP007
+
+
+@dataclass(frozen=True, slots=True)
+class TaskEdits:
+    """A validated partial update to a task.
+
+    Field-for-field the five keys `UpdateTaskSerializer` accepts, and nothing
+    more. The two that exist in the API but are deliberately absent:
+
+    * ``goal_id`` is read-only on `TaskSerializer` and is not on the update
+      serializer. Filing a task under a goal goes through
+      ``POST /goals/{id}/link-task/``, a different endpoint with different
+      semantics, so an edit form that appeared to change it would send a field
+      the backend ignores -- the user would see the change vanish on reload.
+    * ``status`` is likewise not updatable here; it moves only through the
+      dedicated ``mark-doing``/``mark-done`` actions.
+
+    The invariant at the end is the backend's: `UpdateTaskSerializer.validate`
+    rejects an empty payload with *"Provide name, description, due_date,
+    importance, or estimated_hours."*, so catching it here turns a 400 into a
+    flash before a pointless round trip.
+    """
+
+    name: UnsetOr[str] = UNSET
+    #: `None` is a valid instruction here (clear the description), which is why
+    #: this field needs `Unset` rather than defaulting to `None`.
+    description: UnsetOr[str | None] = UNSET
+    due_date: UnsetOr[date | None] = UNSET
+    priority: UnsetOr[Priority] = UNSET
+    estimated_hours: UnsetOr[Duration | None] = UNSET
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, Unset):
+            object.__setattr__(
+                self,
+                "name",
+                normalize_name(
+                    self.name, MAX_NAME_LENGTH, "Task name", InvalidTaskError
+                ),
+            )
+        if not isinstance(self.description, Unset):
+            object.__setattr__(
+                self,
+                "description",
+                normalize_markdown(
+                    self.description,
+                    MAX_DESCRIPTION_LENGTH,
+                    "Task description",
+                    InvalidTaskError,
+                ),
+            )
+        if not isinstance(self.due_date, Unset) and self.due_date is not None:
+            # A `datetime` reaching a `DateField` would be silently truncated to
+            # its date, so it is rejected for the same reason `Task` rejects one.
+            if type(self.due_date) is not date:
+                raise InvalidTaskError("Task due date must be a date.")
+        if not isinstance(self.priority, Unset) and not isinstance(
+            self.priority, Priority
+        ):
+            raise InvalidTaskError("Task priority must be a Priority.")
+        if not isinstance(self.estimated_hours, Unset) and (
+            self.estimated_hours is not None
+            and not isinstance(self.estimated_hours, Duration)
+        ):
+            raise InvalidTaskError("Task estimated hours must be a Duration or None.")
+
+        if self.is_empty:
+            raise InvalidTaskError(
+                "Provide name, description, due_date, importance, or estimated_hours."
+            )
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether nothing at all was set -- which the backend would reject.
+
+        Checked in `__post_init__`, so an instance that exists is never empty;
+        the property is the check itself, shared by both.
+        """
+        return all(
+            isinstance(value, Unset)
+            for value in (
+                self.name,
+                self.description,
+                self.due_date,
+                self.priority,
+                self.estimated_hours,
+            )
+        )
+
+
 __all__ = [
     "HOUR_STEP",
+    "MAX_DESCRIPTION_LENGTH",
     "MAX_DURATION",
     "MAX_IMPORTANCE",
+    "MAX_NAME_LENGTH",
     "MIN_IMPORTANCE",
+    "UNSET",
     "DailyPlanId",
     "Duration",
     "GoalId",
@@ -360,8 +569,12 @@ __all__ = [
     "Importance",
     "LlmHealth",
     "Priority",
+    "TaskEdits",
     "TaskId",
     "TaskStatus",
+    "Unset",
+    "UnsetOr",
     "UserId",
     "normalize_markdown",
+    "normalize_name",
 ]
