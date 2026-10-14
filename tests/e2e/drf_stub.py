@@ -28,6 +28,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from flask import Flask, Response, request
 from werkzeug.serving import BaseWSGIServer, make_server
@@ -226,10 +227,15 @@ class StubBackend:
         self.goals: list[dict] = []
         #: Backend-owned daily plans; the /tasks/daily-plans/ endpoint serves these.
         self.daily_plans: list[dict] = []
-        #: Whether the fake LLM provider answers. False makes the health probe
-        #: and both triggers answer 503, which is how the real backend reports an
-        #: unreachable provider.
+        #: Whether the fake LLM provider answers. False makes the health probe,
+        #: both task triggers, and daily-plan generation answer 503, which is how
+        #: the real backend reports an unreachable provider.
         self.llm_available: bool = True
+        #: Which 409 `add-task` should answer, if any: ``None`` to succeed, or
+        #: ``"done"``/``"full"``. The backend raises `TaskAlreadyDone` and
+        #: `DailyPlanFull` under their own conditions, so a test that wants
+        #: either one has to be able to ask for it.
+        self.add_daily_plan_task_conflict: str | None = None
         #: Access tokens the stub accepts. Anything else gets a 401.
         self.valid_access_tokens: set[str] = set()
         self.overview: dict = DEFAULT_OVERVIEW
@@ -251,6 +257,7 @@ class StubBackend:
             self.goals = []
             self.daily_plans = []
             self.llm_available = True
+            self.add_daily_plan_task_conflict = None
             self.valid_access_tokens = {DEFAULT_ACCESS_TOKEN, ROTATED_ACCESS_TOKEN}
             self.overview = DEFAULT_OVERVIEW
             self.user = DEFAULT_USER
@@ -459,10 +466,22 @@ class StubBackend:
         self.on_call("POST", "/tasks/tasks/", self._create_task_response)
         self.on_call("GET", "/tasks/goals/", self._goals_list_response)
         self.on_call("GET", "/tasks/daily-plans/", self._daily_plans_response)
+        self.on_call("POST", "/tasks/daily-plans/", self._create_daily_plan_response)
+        # Registered before the `<id>` fallback below, and it has to be: both
+        # `generate/` and the plan-detail path have the same shape
+        # (`/tasks/daily-plans/<something>/`), and a fallback matcher would
+        # swallow whichever was registered later.
+        self.on_call(
+            "POST", "/tasks/daily-plans/generate/", self._generate_daily_plan_response
+        )
+        self.on_call(
+            "POST", "/tasks/daily-plans/<id>/add-task/", self._add_task_to_plan_response
+        )
         self.on_call("GET", "/tasks/tasks/llm-health/", self._llm_health_response)
         self.on_call("POST", "/tasks/tasks/<id>/evaluate/", self._llm_trigger_response)
         self.on_call("POST", "/tasks/tasks/<id>/decompose/", self._llm_trigger_response)
         self.on_call("*", "/tasks/tasks/<id>/", self._task_detail_response)
+        self.on_call("*", "/tasks/goals/<id>/", self._goal_detail_response)
 
     def _item_response(self, recorded: RecordedRequest) -> StubResponse:
         transaction_id = recorded.path.removeprefix("/transactions/").removesuffix("/")
@@ -485,24 +504,33 @@ class StubBackend:
     # -- tasks ------------------------------------------------------------
 
     def _tasks_list_response(self, recorded: RecordedRequest) -> StubResponse:
-        """Serve the task list, honouring the status filter.
+        """Serve the task list, honouring the `status` and `goal_id` filters.
 
         `TaskFilterQuerySerializer` declares `status` as a choice over
-        ``TASK_STATUS_CHOICES`` -- ``todo`` / ``doing`` / ``done``. A stub that
-        ignored the filter would serve the whole backlog as the "completed"
-        list, and every assertion about the finished-tasks section would pass
-        for the wrong reason. An unrecognised value answers 400 exactly as the
-        backend does, so a client that sent ``completed`` would fail here rather
-        than quietly appear to work.
+        ``TASK_STATUS_CHOICES`` -- ``todo`` / ``doing`` / ``done`` -- and
+        ``goal_id`` as an optional UUID. A stub that ignored the filters would
+        serve the whole backlog as the "completed" list, and every assertion
+        about the finished-tasks section would pass for the wrong reason. An
+        unrecognised `status` answers 400 exactly as the backend does, so a
+        client that sent ``completed`` would fail here rather than quietly
+        appear to work.
+
+        `goal_id` is honoured **independently** of `status`, which is the whole
+        point of using it: a goal detail page asks for a goal's tasks with no
+        status at all and needs the finished ones back. A stub that required both
+        filters to be absent-together, or that tied them together, would hide
+        exactly the bug that matters there.
         """
+        rows = list(self.tasks)
+        goal_id = recorded.query.get("goal_id")
+        if goal_id is not None:
+            rows = [row for row in rows if row.get("goal_id") == goal_id]
         status = recorded.query.get("status")
         if status is None:
-            return StubResponse(200, list(self.tasks))
+            return StubResponse(200, rows)
         if status not in {"todo", "doing", "done"}:
             return StubResponse(400, {"detail": "Unknown task status."})
-        return StubResponse(
-            200, [row for row in self.tasks if row.get("status") == status]
-        )
+        return StubResponse(200, [row for row in rows if row.get("status") == status])
 
     def _task_detail_response(self, recorded: RecordedRequest) -> StubResponse:
         """GET/PATCH/DELETE on one task, as `TaskViewSet` exposes them.
@@ -539,8 +567,113 @@ class StubBackend:
     def _goals_list_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, list(self.goals))
 
+    def _goal_detail_response(self, recorded: RecordedRequest) -> StubResponse:
+        """GET one goal, as `GoalViewSet.retrieve` exposes it.
+
+        A 404 for a goal that is not in the store, which is what the backend
+        answers for both "missing" and "not yours" -- a stub that invented a
+        third outcome would let a page that renders an empty goal instead of
+        saying "no longer exists" pass here.
+        """
+        goal_id = recorded.path.removeprefix("/tasks/goals/").removesuffix("/")
+        row = next((g for g in self.goals if g.get("id") == goal_id), None)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        return StubResponse(200, row)
+
     def _daily_plans_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, list(self.daily_plans))
+
+    def _create_daily_plan_response(self, recorded: RecordedRequest) -> StubResponse:
+        """POST /daily-plans/ -- `GetOrCreateDailyPlan`, so 201 either way.
+
+        Returns the existing plan when the date already has one, which is the
+        backend's behaviour and the reason a client cannot tell "created" from
+        "found" and does not need to.
+        """
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        plan_date = payload.get("date")
+        existing = next(
+            (p for p in self.daily_plans if p.get("date") == plan_date), None
+        )
+        if existing is not None:
+            return StubResponse(201, existing)
+        self._next_id += 1
+        plan = {
+            # A real UUID, not an incrementing string. `DailyPlanId` validates as
+            # a UUID, so a `plan-2` here would be rejected inside the mapper and
+            # the failure would look like a broken feature rather than a
+            # fixture that does not match the API.
+            "id": str(uuid4()),
+            "date": plan_date,
+            "tasks": [],
+            "total_hours": "0.00",
+            "is_full": False,
+            "generated_by_llm": False,
+            "created_at": "2026-10-05T06:00:00Z",
+        }
+        self.daily_plans.append(plan)
+        return StubResponse(201, plan)
+
+    def _generate_daily_plan_response(self, recorded: RecordedRequest) -> StubResponse:
+        """POST /daily-plans/generate/ -- 202, queued, and no plan.
+
+        The shape matters more here than anywhere else in this stub: the real
+        endpoint hands the work to Celery and returns immediately, so a 200 with a
+        plan would let a BFF that claims "your day is planned" pass, and a 200
+        with an *empty* body would too. Neither is what the backend sends.
+        """
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        if not self.llm_available:
+            return StubResponse(503, {"detail": "The LLM provider is unreachable."})
+        return StubResponse(
+            202,
+            {
+                "detail": "Daily plan generation queued.",
+                "date": payload.get("date"),
+                "queued": True,
+            },
+        )
+
+    def _add_task_to_plan_response(self, recorded: RecordedRequest) -> StubResponse:
+        """POST /daily-plans/<id>/add-task/ -- 200 with the reloaded plan.
+
+        The 409s are reproduced because they are three distinct outcomes the UI
+        has to word differently, and a stub that always succeeded would let a
+        button that mishandles them look fine:
+
+        * a task already on the plan -> `TaskAlreadyInPlan`
+        * a finished task -> `TaskAlreadyDone`
+        * the day is over its hour budget -> `DailyPlanFull`
+
+        `add_daily_plan_task_conflict` is how a test asks for one of the last
+        two; the first is unconditional, as on the backend.
+        """
+        plan_id = recorded.path.removeprefix("/tasks/daily-plans/").removesuffix(
+            "/add-task/"
+        )
+        plan = next((p for p in self.daily_plans if p.get("id") == plan_id), None)
+        if plan is None:
+            return StubResponse(404, {"detail": "Not found."})
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        task_id = payload.get("task_id")
+        task = next((t for t in self.tasks if t.get("id") == task_id), None)
+        if task is None:
+            return StubResponse(404, {"detail": "Not found."})
+        if any(row.get("id") == task_id for row in plan["tasks"]):
+            return StubResponse(409, {"detail": "This task is already on the plan."})
+        if self.add_daily_plan_task_conflict == "done" and task.get("status") == "done":
+            return StubResponse(409, {"detail": "A completed task cannot be planned."})
+        if self.add_daily_plan_task_conflict == "full":
+            return StubResponse(409, {"detail": "The day is already full."})
+        plan["tasks"].append(task)
+        plan["total_hours"] = self._sum_hours(plan["tasks"])
+        return StubResponse(200, plan)
+
+    @staticmethod
+    def _sum_hours(rows: list[dict]) -> str:
+        total = sum(float(row.get("estimated_hours") or 0) for row in rows)
+        return f"{total:.2f}"
 
     def _llm_health_response(self, _recorded: RecordedRequest) -> StubResponse:
         # The shape is `LlmHealthSerializer`'s, confirmed against the backend:
@@ -570,7 +703,11 @@ class StubBackend:
         payload = recorded.json if isinstance(recorded.json, dict) else {}
         self._next_id += 1
         row = {
-            "id": f"task-{self._next_id}",
+            # A real UUID: `TaskSerializer.id` is a `UUIDField` and `TaskId`
+            # validates as one, so an incrementing string here would be rejected
+            # inside the mapper and read as a broken feature rather than as a
+            # fixture that does not match the API.
+            "id": str(uuid4()),
             "name": payload.get("name", "New task"),
             "description": payload.get("description"),
             "goal_id": payload.get("goal_id"),
@@ -632,6 +769,20 @@ class StubBackend:
                 # `/tasks/tasks/llm-health/`, which has the same shape and is
                 # matched first because it was registered by exact path.
                 route = self._routes.get(("*", "/tasks/tasks/<id>/"))
+            if (
+                route is None
+                and path.startswith("/tasks/goals/")
+                and path.count("/") == 4
+            ):
+                route = self._routes.get(("*", "/tasks/goals/<id>/"))
+            if (
+                route is None
+                and path.startswith("/tasks/daily-plans/")
+                and path.count("/") == 5
+            ):
+                # `<id>/add-task/`. `generate/` is one segment shorter and was
+                # registered by exact path above, so it never reaches here.
+                route = self._routes.get(("POST", "/tasks/daily-plans/<id>/add-task/"))
 
             if route is None:
                 return StubResponse(404, {"detail": f"Unstubbed: {method} {path}"})
@@ -700,6 +851,31 @@ class StubDRFServer:
     @property
     def goals(self) -> list[dict]:
         return self.backend.goals
+
+    @property
+    def llm_available(self) -> bool:
+        return self.backend.llm_available
+
+    @llm_available.setter
+    def llm_available(self, value: bool) -> None:
+        self.backend.llm_available = value
+
+    @property
+    def add_daily_plan_task_conflict(self) -> str | None:
+        return self.backend.add_daily_plan_task_conflict
+
+    @add_daily_plan_task_conflict.setter
+    def add_daily_plan_task_conflict(self, value: str | None) -> None:
+        self.backend.add_daily_plan_task_conflict = value
+
+    def seed_daily_plans(self, *plans: dict) -> None:
+        """Replace the daily plans the stub serves.
+
+        Deep-copied for the same reason :meth:`seed_tasks` is: ``add-task``
+        mutates the stored rows in place, so a test that seeded a module-level
+        constant would have it rewritten by its own first click.
+        """
+        self.backend.daily_plans = [deepcopy(plan) for plan in plans]
 
     @property
     def requests(self) -> list[RecordedRequest]:

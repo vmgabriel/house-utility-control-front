@@ -548,6 +548,35 @@ class DRFAPIClient:
             )
         return body
 
+    async def list_tasks_by_goal(self, access_token: str, goal_id: str) -> Any:
+        """Every task filed under one goal, finished ones included.
+
+        `goal_id` is the **only** filter sent. `TaskFilterQuerySerializer`
+        declares `status` and `goal_id` as independent optional query
+        parameters, and omitting `status` is what makes this return the goal's
+        finished work too -- which is what a goal detail page needs, since its
+        progress bar is the share of *all* the goal's hours that are done.
+
+        There is no `/goals/<id>/tasks/` endpoint; this is the only way to ask.
+        """
+        status, body = await self._request(
+            "GET",
+            "/tasks/tasks/",
+            access_token=access_token,
+            params={"goal_id": goal_id},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 400:
+            raise ValidationError(
+                f"Invalid goal filter: {goal_id!r}", status_code=400, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list tasks for goal", status_code=status, detail=body
+            )
+        return body
+
     async def list_tasks_by_status(self, access_token: str, status_filter: str) -> Any:
         """List the caller's tasks narrowed to one status.
 
@@ -671,6 +700,27 @@ class DRFAPIClient:
             )
         return body
 
+    async def get_goal(self, access_token: str, goal_id: str) -> Any:
+        """Read one goal.
+
+        A 404 is raised rather than swallowed: the goal may be missing, or it may
+        belong to somebody else, and the caller has to be able to say "that goal
+        no longer exists" instead of rendering an empty page under a heading the
+        user never had.
+        """
+        status, body = await self._request(
+            "GET", f"/tasks/goals/{goal_id}/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Goal not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch goal", status_code=status, detail=body
+            )
+        return body
+
     async def list_daily_plans(self, access_token: str) -> Any:
         """Every daily plan the caller has, newest first.
 
@@ -688,6 +738,102 @@ class DRFAPIClient:
         if status >= 400:
             raise DRFAPIClientError(
                 "Failed to list daily plans", status_code=status, detail=body
+            )
+        return body
+
+    async def create_daily_plan(self, access_token: str, plan_date: str) -> Any:
+        """Open the plan for one day, or return the one that is already open.
+
+        `CreateDailyPlanSerializer` requires `date`, and the view behind it is
+        `GetOrCreateDailyPlan` -- so this answers 201 with the day's plan whether
+        it created it or found it, and the caller cannot tell the two apart. That
+        is deliberate on the backend's part and it is why this method is not named
+        `create_...` in any stronger sense than that.
+
+        The ISO string is passed in rather than a `date` because this client is
+        the shared kernel and imports nothing from any bounded context's
+        vocabulary (AGENTS.md, constraint 1); the caller formats it.
+        """
+        status, body = await self._request(
+            "POST",
+            "/tasks/daily-plans/",
+            access_token=access_token,
+            json_data={"date": plan_date},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Daily plan not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to open the daily plan", status_code=status, detail=body
+            )
+        return body
+
+    async def generate_daily_plan(self, access_token: str, plan_date: str) -> Any:
+        """Ask the assistant to plan one day. Answers 202; the work is queued.
+
+        ``date`` is optional in ``GenerateDailyPlanSerializer`` and this method
+        always sends it, so the day the backend plans is the day the button was
+        rendered for and never "whatever day the request happened to land on".
+
+        **202, not 200, and never a plan.** The view hands the work to Celery and
+        returns; the plan is written by a worker afterwards. There is also no 409
+        for a day that is already planned -- re-planning one is allowed, and the
+        BFF decides not to offer the button rather than relying on the endpoint to
+        refuse.
+
+        A 503 is raised like any other failure here; the adapter decides what it
+        means, and the tasks adapter maps it to `LlmUnavailableError`.
+        """
+        status, body = await self._request(
+            "POST",
+            "/tasks/daily-plans/generate/",
+            access_token=access_token,
+            json_data={"date": plan_date},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to queue daily plan generation", status_code=status, detail=body
+            )
+        return body
+
+    async def add_task_to_daily_plan(
+        self, access_token: str, plan_id: str, task_id: str
+    ) -> Any:
+        """Schedule one task onto the day named by ``plan_id``.
+
+        The body is the single key `DailyPlanTaskSerializer` declares,
+        ``{"task_id": ...}``; there is no ordering or estimate to send, because
+        the backend reads all of that from the task row.
+
+        **A 409 is not treated as a failure of the request.** The backend answers
+        it for three real outcomes -- the task is already scheduled, the day is
+        full, the task is already done -- each with its own `detail`, and each one
+        is something the user needs to be told rather than a bug. The status is
+        therefore preserved on the raised error (with the body as `detail`) so
+        the adapter can recognise it and the view can show the backend's own
+        wording.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/tasks/daily-plans/{plan_id}/add-task/",
+            access_token=access_token,
+            json_data={"task_id": task_id},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError(
+                "Daily plan or task not found", status_code=404, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to schedule the task on the daily plan",
+                status_code=status,
+                detail=body,
             )
         return body
 

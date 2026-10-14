@@ -18,7 +18,7 @@ same rules into the application layer, which is supposed to stay thin.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from src.tasks.domain.exceptions import (
@@ -54,6 +54,7 @@ __all__ = [
     "DEFAULT_OVERWHELM_THRESHOLD",
     "DailyPlan",
     "Goal",
+    "GoalProgress",
     "Task",
 ]
 
@@ -114,6 +115,15 @@ class Task:
     `goal_id` is optional because the backend's `goal` foreign key is nullable
     -- the overwhelming majority of backlog items are not filed under a goal --
     and because drf-spectacular is known to over-report nullability here.
+
+    `completed_at` is the backend's own answer to *when* the task was finished.
+    It is stored rather than derived from `status` on purpose. `status == DONE`
+    and `completed_at is not None` agree for every task the backend currently
+    produces -- `TaskModel.mark_done` sets both together and `reopen` clears both
+    -- but only the timestamp can say *when*, and it is the only field on the
+    whole task payload that can. Everything that wants to know how much of a
+    goal is genuinely finished (see `GoalProgress`) needs that "when", not the
+    "that".
     """
 
     name: str
@@ -125,6 +135,12 @@ class Task:
     priority: Priority = Priority.MEDIUM
     estimated_hours: Duration | None = None
     status: TaskStatus = TaskStatus.TODO
+    #: When the backend finished this task, or `None` while it is still open.
+    #:
+    #: Optional because the column is nullable, not because the backend omits the
+    #: field: `TaskSerializer` declares `completed_at` read-only and `allow_null`,
+    #: so every task payload carries the key and an open task carries `null`.
+    completed_at: datetime | None = None
     is_checked_by_llm: bool = False
     llm_evaluation_failed: bool = False
     #: What the backend's serializer computed for this task, or `None` when the
@@ -160,6 +176,10 @@ class Task:
             raise InvalidTaskError("Task estimated hours must be a Duration or None.")
         if not isinstance(self.status, TaskStatus):
             raise InvalidTaskError("Task status must be a TaskStatus.")
+        if self.completed_at is not None and not isinstance(
+            self.completed_at, datetime
+        ):
+            raise InvalidTaskError("Task completed_at must be a datetime or None.")
         self.is_checked_by_llm = _require_bool(
             self.is_checked_by_llm, "Task is_checked_by_llm", InvalidTaskError
         )
@@ -226,6 +246,19 @@ class Task:
             return False
         return self.estimated_hours.amount > threshold
 
+    def is_completed(self) -> bool:
+        """Whether the backend has recorded this task as finished.
+
+        Keyed on `completed_at` rather than on `status`, because the timestamp is
+        the fact both facts are read from and the only one of the two that says
+        *when*. The two agree on every task the backend currently produces --
+        `mark_done` writes both, `reopen` clears both -- so this is not a
+        divergence in practice; it is a choice about which single field is the
+        authority, so that :class:`GoalProgress` and this method can never end up
+        reading two different definitions of "finished".
+        """
+        return self.completed_at is not None
+
     def start(self) -> None:
         """Move to `DOING`.
 
@@ -237,14 +270,26 @@ class Task:
             raise InvalidTaskError("A completed task cannot be moved back to doing.")
         self.status = TaskStatus.DOING
 
-    def complete(self) -> None:
+    def complete(self, now: datetime | None = None) -> None:
         """Mark the task done.
 
         Idempotent: completing an already-completed task is a no-op rather than
         an error, because the button that triggers this is rendered on every
         row and a double-click is a realistic input, not a programming mistake.
+
+        `now` is the completion timestamp, mirroring the backend's
+        `Task.complete(now=...)`, and is left alone on a repeat call so a
+        double-click cannot move the moment the work was finished. The BFF does
+        not currently call this -- completion goes through
+        `POST /tasks/<id>/mark-done/`, which the backend applies itself -- but
+        leaving `status` and `completed_at` able to disagree would make the
+        entity's two notions of "finished" inconsistent for no reason.
         """
+        if self.status is TaskStatus.DONE:
+            return
         self.status = TaskStatus.DONE
+        if now is not None:
+            self.completed_at = now
 
     def is_overdue(self, today: date) -> bool:
         """Whether the due date has passed and the task is not finished.
@@ -341,6 +386,100 @@ class Goal:
         return normalize_name(name, MAX_NAME_LENGTH, "Goal name", InvalidGoalError)
 
 
+@dataclass(frozen=True, slots=True)
+class GoalProgress:
+    """How much of a goal is finished, measured in estimated hours.
+
+    The backend sends no such figure. `GoalSerializer` carries `task_count` and
+    nothing else, and `DailyPlanSerializer.total_hours` is scoped to a single
+    day -- there is no goal-level hours field anywhere in the API, and no
+    `completed_hours` either. So this is computed here from the tasks the goal
+    owns, which is the only place the two inputs exist.
+
+    That computation is deliberately the *simplest* one the data supports:
+    completed hours are the estimates of the tasks the backend has stamped with
+    `completed_at`, not the hours actually worked. The API has no time-tracking
+    and no "hours spent" field, so an estimate is the finest unit of effort the
+    product can honestly count, and presenting it as anything more precise would
+    be a claim the data cannot support. A goal whose tasks were badly estimated
+    will read as 100% complete while being nothing like finished; that is a
+    property of estimating, not of this arithmetic.
+
+    Two details that are choices rather than arithmetic:
+
+    * **Unestimated tasks contribute zero.** A task with no estimate is not a
+      zero-hour task, it is an *unmeasured* one. Counting it as zero is the only
+      option that does not require inventing a number, and it is the same
+      convention `Task.is_overwhelmed` uses.
+    * **The percentage truncates rather than rounds.** 2/3 complete is 66.67%,
+      and this reports 66. Truncation can only ever *understate* progress,
+      whereas rounding could report 67% on two thirds of the work. A bar that
+      quietly overshoots is worse than one that is a fraction pessimistic.
+    """
+
+    total_hours: Duration
+    completed_hours: Duration
+    #: 0-100, inclusive.
+    percentage: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.total_hours, Duration):
+            raise InvalidGoalError("Goal progress total hours must be a Duration.")
+        if not isinstance(self.completed_hours, Duration):
+            raise InvalidGoalError("Goal progress completed hours must be a Duration.")
+        if isinstance(self.percentage, bool) or not isinstance(self.percentage, int):
+            raise InvalidGoalError("Goal progress percentage must be an integer.")
+        if not 0 <= self.percentage <= 100:
+            raise InvalidGoalError(
+                "Goal progress percentage must be between 0 and 100."
+            )
+        if self.completed_hours.amount > self.total_hours.amount:
+            raise InvalidGoalError(
+                "Goal progress cannot exceed the goal's total estimated hours."
+            )
+
+    @classmethod
+    def from_tasks(cls, tasks: list[Task]) -> GoalProgress:
+        """Measure progress over `tasks`.
+
+        A goal with no tasks, or whose tasks are all unestimated, is 0% of 0h
+        rather than a division by zero: "nothing to do" is a real state a goal
+        is in on the day it is created, and a page that crashed on it would be
+        crashing on the most ordinary event in the product.
+        """
+        total = Duration.zero()
+        completed = Duration.zero()
+        for task in tasks:
+            hours = task.estimated_hours
+            if hours is None or not hours.is_estimated:
+                continue
+            total = total + hours
+            if task.is_completed():
+                completed = completed + hours
+        return cls(
+            total_hours=total,
+            completed_hours=completed,
+            percentage=_percentage(completed, total),
+        )
+
+    @property
+    def remaining_hours(self) -> Duration:
+        """Estimated hours still outstanding."""
+        return self.total_hours - self.completed_hours
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether there is no measured work at all behind this progress."""
+        return not self.total_hours.is_estimated
+
+
+def _percentage(completed: Duration, total: Duration) -> int:
+    """The share of `total` that `completed` represents, as a whole percent."""
+    if not total.is_estimated:
+        return 0
+    return int(completed.amount / total.amount * 100)
+
+
 @dataclass(eq=False, slots=True)
 class DailyPlan:
     """What the user committed to on one day.
@@ -431,5 +570,6 @@ __all__ = [
     "DEFAULT_OVERWHELM_THRESHOLD",
     "DailyPlan",
     "Goal",
+    "GoalProgress",
     "Task",
 ]

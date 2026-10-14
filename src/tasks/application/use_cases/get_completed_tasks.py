@@ -1,24 +1,29 @@
 """List the caller's finished tasks.
 
-**This is not a seven-day window, and the use case is where that has to be
-honest.** The brief behind this asked for "completed tasks, last 7 days", and
-the backend cannot answer that question:
+**This is still not a seven-day window, but the reason has changed, and the old
+reason is worth keeping in mind.** The brief behind this asked for "completed
+tasks, last 7 days". When this was first written the backend could not answer
+it:
 
-* `TaskModel` has no `completed_at` column. It has `created_at` and
+* `TaskModel` had no `completed_at` column -- only `created_at` and
   `updated_at`, and nothing else.
-* `TaskSerializer` exposes neither as a completion time either.
-* `Task.mark_as_done` sets `status` and bumps `updated_at`, but so does every
-  other transition -- renaming, `promote_priority`, `link_to_goal` all touch it
-  too. So `updated_at` is "last touched", not "finished", and filtering on it
-  would put a two-year-old task completed yesterday at the top of a "recently
-  completed" list, while hiding a task finished eight days ago that happened to
-  be edited today.
+* `updated_at` is "last touched", not "finished": `mark_done` bumps it, but so
+  does every other transition, so a filter on it would put a two-year-old task
+  completed yesterday at the top and hide one finished eight days ago that
+  happened to be edited today.
 
-Substituting `updated_at` here would look like the requested feature and be
-wrong in both directions, so the use case asks for the truth it can have --
-every `done` task -- and leaves the window to a backend change. The adapter
-documents the same gap on the wire side, and `CompletedTasksViewModel` renders
-the ordering without claiming it is recency.
+**The backend has since gained `completed_at`**, read-only and nullable on
+`TaskSerializer`, written by `mark_done` and cleared by `reopen`. The window is
+now *expressible*. It is still not implemented here, and the reason is no longer
+missing data -- it is that this list is the backend's, in the backend's
+`-created_at, -id` order, and narrowing and re-sorting it in the BFF would mean
+presenting the result under a heading that implies the backend did it. The
+ordering this page actually has is stated on it instead.
+
+So the choice moved from "impossible" to "not this page's job", which is a
+different trade and worth stating rather than leaving the old explanation in
+place. Where a *measured* completion figure is wanted -- the goal progress bar
+-- `completed_at` is read directly, via `Task.is_completed`.
 """
 
 from __future__ import annotations
@@ -31,7 +36,8 @@ class GetCompletedTasksUseCase:
     """Every task the authenticated user has finished.
 
     The order is the backend's: `-created_at, -id`, which is *not* completion
-    order. There is no field on the wire that would make it one.
+    order. `completed_at` would make it one and is deliberately not used here --
+    see the module docstring.
     """
 
     def __init__(self, *, tasks_client: TasksApiClient) -> None:

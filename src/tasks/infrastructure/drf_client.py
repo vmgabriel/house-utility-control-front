@@ -45,11 +45,21 @@ from src.shared.http.drf_client import (
 )
 from src.tasks.domain.entities import DailyPlan, Goal, Task
 from src.tasks.domain.exceptions import (
+    DailyPlanNotFoundError,
+    GoalNotFoundError,
     InvalidTasksInputError,
     LlmUnavailableError,
     TaskNotFoundError,
+    TaskNotPlannableError,
 )
-from src.tasks.domain.value_objects import LlmHealth, TaskEdits, TaskId, TaskStatus
+from src.tasks.domain.value_objects import (
+    DailyPlanId,
+    GoalId,
+    LlmHealth,
+    TaskEdits,
+    TaskId,
+    TaskStatus,
+)
 from src.tasks.infrastructure.mappers import (
     map_daily_plan,
     map_goal,
@@ -59,6 +69,7 @@ from src.tasks.infrastructure.mappers import (
     task_to_payload,
 )
 from src.tasks.infrastructure.schemas import (
+    DRFDailyPlanQueuedResponse,
     DRFDailyPlanResponse,
     DRFGoalResponse,
     DRFLlmHealthResponse,
@@ -133,6 +144,39 @@ def _validated(schema: type, body: object, entity: str):
             f"({schema.__name__}): {exc}. The backend's serializer and "
             f"src/tasks/infrastructure/schemas.py have diverged."
         ) from exc
+
+
+def _backend_detail(exc: DRFAPIClientError, fallback: str) -> str:
+    """The backend's own error message, or `fallback` if it did not send one.
+
+    DRF's exception handler puts the message under `detail`, which the shared
+    client preserves on the raised error rather than flattening into its own text.
+    Reading it back is what lets a 409 say *why* the task could not be scheduled
+    instead of repeating the endpoint's failure.
+
+    The ``fallback`` is not defensive padding: a 409 raised by
+    `AddTaskToDailyPlan` carries a real message today, but a proxy in front of
+    DRF can replace the body with an HTML error page, and a task that cannot be
+    scheduled must still produce a flash rather than `KeyError`.
+    """
+    body = exc.detail
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail
+        # DRF field errors arrive as `{"field": ["..."]}` with no `detail` key.
+        # Joined rather than indexed by field name, so an unexpected shape still
+        # yields the user's text instead of a KeyError.
+        messages = [
+            message
+            for value in body.values()
+            for message in ([value] if isinstance(value, str) else value or [])
+        ]
+        if messages:
+            return " ".join(str(message) for message in messages)
+    if isinstance(body, str) and body.strip():
+        return body
+    return fallback
 
 
 class DrfTasksClient:
@@ -235,15 +279,16 @@ class DrfTasksClient:
         names, and doing the selection in the BFF would mean fetching every open
         task on a page whose only subject is the finished ones.
 
-        **No date filtering is applied, here or afterwards.** The backend has no
-        completion timestamp to filter on -- `TaskModel` has no `completed_at`
-        and `TaskSerializer` sends no completion time, so `created_at` and
-        `updated_at` are both "last touched" and neither identifies when a task
-        was finished. The seven-day window the product asked for is therefore not
-        implementable against this API; approximating it on `updated_at` would
-        put tasks edited today at the top of a "recently completed" list
-        regardless of when they were done. See `GetCompletedTasksUseCase` for
-        the full argument.
+        **No date filtering is applied, here or afterwards.** Not because the backend
+        cannot support one -- `completed_at` is on every task payload and could be
+        filtered on -- but because it filters on nothing: the read is
+        ``?status=done`` and the list is rendered in the backend's order, which is
+        ``-created_at, -id``. A "last 7 days" window is therefore not something
+        this method can start honouring by adding a parameter; it would mean
+        sorting and slicing a list the backend already ordered, and presenting the
+        result as the backend's own ordering when it is not. `completed_at` is
+        used where a *measured* figure needs it -- goal progress -- rather than to
+        quietly impose an order this page has never had.
 
         `done` is the wire value, not `completed`: `TASK_STATUS_CHOICES` is
         ``todo`` / ``doing`` / ``done``.
@@ -264,6 +309,28 @@ class DrfTasksClient:
         return [
             map_goal(_validated(DRFGoalResponse, item, "Goal"))
             for item in _as_list(body, "Goal")
+        ]
+
+    async def get_goal(self, access_token: str, goal_id: GoalId) -> Goal:
+        try:
+            body = await self.api_client.get_goal(access_token, str(goal_id))
+        except NotFoundError as exc:
+            raise GoalNotFoundError("Goal not found or not accessible.") from exc
+        return map_goal(_validated(DRFGoalResponse, _as_mapping(body, "Goal"), "Goal"))
+
+    async def get_tasks_by_goal(self, access_token: str, goal_id: GoalId) -> list[Task]:
+        """Every task under `goal_id`, `done` ones included.
+
+        Deliberately *not* filtered. :meth:`get_backlog` drops `done` because it
+        renders the working set alongside a separate completed list; this renders
+        a goal, whose finished tasks are part of the page and are the numerator of
+        its progress bar. Applying the same rule here would make the goal detail
+        page show only open work and report every goal as 0% complete.
+        """
+        body = await self.api_client.list_tasks_by_goal(access_token, str(goal_id))
+        return [
+            map_task(_validated(DRFTaskResponse, item, "Task"))
+            for item in _as_list(body, "Task")
         ]
 
     # ------------------------------------------------------------------ #
@@ -290,6 +357,86 @@ class DrfTasksClient:
             if plan.plan_date == plan_date:
                 return plan
         return None
+
+    async def create_daily_plan(self, access_token: str, plan_date: date) -> DailyPlan:
+        """Open the plan for `plan_date`, or return the one already open.
+
+        The backend's `GetOrCreateDailyPlan` answers 201 either way and does not
+        say which happened, so neither does this. Nothing here needs to know:
+        the caller wanted a plan for the date and now has one.
+        """
+        body = await self.api_client.create_daily_plan(
+            access_token, plan_date.isoformat()
+        )
+        return map_daily_plan(
+            _validated(
+                DRFDailyPlanResponse, _as_mapping(body, "DailyPlan"), "DailyPlan"
+            )
+        )
+
+    async def generate_daily_plan(self, access_token: str, plan_date: date) -> None:
+        """Queue the assistant's plan for `plan_date`.
+
+        The body is validated against :class:`DRFDailyPlanQueuedResponse` even
+        though nothing is mapped from it. It is read to prove the endpoint
+        answered the shape this adapter expects -- a ``202`` carrying a plan, or a
+        route that has been renamed to something else, both of which would
+        otherwise pass silently and leave the user told their day was planned when
+        it was not. The date it echoes is the one a test asserts on.
+
+        A ``503`` becomes `LlmUnavailableError` for the same reason the decompose
+        and evaluate triggers map one: an unreachable provider must not take the
+        page down, and the flash saying so is more useful than a 503 page.
+        """
+        try:
+            body = await self.api_client.generate_daily_plan(
+                access_token, plan_date.isoformat()
+            )
+        except DRFAPIClientError as exc:
+            raise _as_llm_unavailable(exc) from exc
+        _validated(
+            DRFDailyPlanQueuedResponse, _as_mapping(body, "DailyPlanQueued"), "Queue"
+        )
+
+    async def add_task_to_daily_plan(
+        self, access_token: str, plan_id: DailyPlanId, task_id: TaskId
+    ) -> DailyPlan:
+        """Schedule one task onto a day and return the reloaded plan.
+
+        The 409 translation is the interesting part. The backend answers it for
+        three real outcomes that all deserve to be shown to the user -- already
+        scheduled, day full, already done -- and its `detail` says which. That
+        detail is carried into `TaskNotPlannableError` verbatim rather than being
+        swapped for a message of this BFF's choosing, because the three reasons
+        need different advice from the user and the backend is the only thing that
+        knows which one applies. Translating them into three exceptions here would
+        mean pattern-matching free text, which breaks the first time the wording
+        changes.
+
+        A 404 is *not* softened the way `get_task`'s is: the missing row here is
+        the plan or the task, and the user clicked a button on a page that named
+        one of them, so "that task no longer exists" or "today's plan no longer
+        exists" is the honest answer either way.
+        """
+        try:
+            body = await self.api_client.add_task_to_daily_plan(
+                access_token, str(plan_id), str(task_id)
+            )
+        except DRFAPIClientError as exc:
+            if exc.status_code == 409:
+                raise TaskNotPlannableError(
+                    _backend_detail(exc, "The task could not be scheduled.")
+                ) from exc
+            if exc.status_code == 404:
+                raise DailyPlanNotFoundError(
+                    "Today's plan, or that task, no longer exists."
+                ) from exc
+            raise
+        return map_daily_plan(
+            _validated(
+                DRFDailyPlanResponse, _as_mapping(body, "DailyPlan"), "DailyPlan"
+            )
+        )
 
     # ------------------------------------------------------------------ #
     # LLM-backed actions

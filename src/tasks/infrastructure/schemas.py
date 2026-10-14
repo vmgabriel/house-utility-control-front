@@ -19,16 +19,19 @@ The divergence this context inherits:
   local threshold comparison. Defaulting it to ``False`` would silently
   downgrade "unknown" into "fine", which is the exact badge the user relies on.
 
-**Two fields this context needs and the API does not have.** Recorded here
-rather than invented, because a schema that declares a field the serializer does
-not send is exactly the failure mode rule 7 exists to prevent -- it would turn a
-missing backend feature into a 500 rather than a visible gap:
+**Fields this context needs, and what the API actually has.** Recorded here
+because a schema that declares a field the serializer does not send is exactly
+the failure mode rule 7 exists to prevent -- it would turn a missing backend
+feature into a 500 rather than a visible gap, and the reverse mistake -- reading
+a field as absent when the backend sends it -- costs a feature silently:
 
-* ``completed_at``. ``TaskModel`` has no such column and ``TaskSerializer``
-  exposes no completion timestamp. There is consequently **no seven-day window
-  on completed tasks**: ``created_at`` and ``updated_at`` are both "when the row
-  last changed", not "when it was finished", and every status transition and
-  every content edit moves ``updated_at``. See ``GetCompletedTasksUseCase``.
+* ``completed_at``. ``TaskSerializer`` declares it
+  ``read_only=True, allow_null=True``, so it is on **every** task payload and is
+  ``null`` while the task is open. The backend writes it in `mark_done` and
+  clears it in ``reopen``. This is the only field on the whole task payload that
+  records *when* a task was finished -- ``created_at`` and ``updated_at`` are
+  both "last touched", and every content edit moves ``updated_at`` -- so it is
+  what goal progress is measured from.
 * ``goal_id`` is present but **read-only**: it is absent from
   ``UpdateTaskSerializer``, and filing a task under a goal goes through
   ``POST /goals/{id}/link-task/`` instead.
@@ -68,6 +71,14 @@ class DRFTaskResponse(BaseModel):
     status: str = "todo"
     #: DRF serialises decimals as strings by default, so this is ``"2.50"``.
     estimated_hours: str | None = None
+    #: An ISO-8601 datetime, e.g. ``"2026-10-05T14:31:12.480Z"``, or ``null``
+    #: while the task is open.
+    #:
+    #: Parsed to `datetime` in `map_task` and never to a `date`. The time
+    #: component is the payload: truncating it would make two tasks finished on
+    #: the same day indistinguishable for any caller that ever wants to order
+    #: them, which is precisely what this field exists to allow.
+    completed_at: str | None = None
     is_checked_by_llm: bool = False
     llm_evaluation_failed: bool = False
     #: The backend's own verdict. ``None`` when the field was not in the payload.
@@ -130,6 +141,27 @@ class DRFDailyPlanResponse(BaseModel):
 DRFDailyPlanResponse.model_rebuild()
 
 
+class DRFDailyPlanQueuedResponse(BaseModel):
+    """The 202 body of `POST /daily-plans/generate/`.
+
+    Declared so the endpoint's shape is pinned rather than assumed, and typed
+    with **no plan in it at all** -- which is the point. The endpoint hands the
+    work to Celery and answers immediately, so there is nothing here to map to a
+    `DailyPlan`. An earlier design had this use case return the day's plan after
+    generating it; that was not implementable, because no plan exists when this
+    response is written.
+
+    ``date`` echoes the day that was queued, which is also how a test can assert
+    the BFF sent the date the user was looking at rather than the server's today.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    detail: str
+    date: str
+    queued: bool = True
+
+
 class DRFLlmHealthResponse(BaseModel):
     """The LLM health probe's body.
 
@@ -161,6 +193,7 @@ class DRFLlmHealthResponse(BaseModel):
 
 
 __all__ = [
+    "DRFDailyPlanQueuedResponse",
     "DRFDailyPlanResponse",
     "DRFGoalResponse",
     "DRFLlmHealthResponse",

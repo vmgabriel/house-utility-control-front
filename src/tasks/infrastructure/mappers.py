@@ -29,13 +29,18 @@ Four contract details drive the implementation, all confirmed against
    and ``None`` (the backend did not say). See :mod:`src.tasks.domain.entities`
    for why those two must not be collapsed.
 
+5. **``completed_at`` is a datetime, not a date.** It is the only field on the
+   task payload that records when a task was *finished*, and goal progress is
+   measured from it. Truncating it to a date would throw away the half of it
+   that distinguishes two tasks finished on the same afternoon.
+
 The hand-written pydantic schemas in :mod:`src.tasks.infrastructure.schemas`
 are authoritative over the drf-spectacular OpenAPI schema (AGENTS.md, rule 7).
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -80,6 +85,30 @@ def _parse_date(raw: str | None, entity: str, field: str) -> date | None:
     except (ValueError, TypeError) as exc:
         raise InvalidTasksInputError(
             f"{entity} '{field}' is not a valid date: {raw!r}."
+        ) from exc
+
+
+def _parse_datetime(raw: str | None, entity: str, field: str) -> datetime | None:
+    """Parse a nullable ISO-8601 datetime, keeping the time component.
+
+    `fromisoformat` on Python 3.11+ accepts the trailing ``Z`` that DRF emits,
+    and the backend's timestamps are always UTC with it, so no ``Z``-rewriting is
+    needed here. A naive value is left naive rather than being stamped with a
+    timezone: inventing one would assert an offset the payload did not carry.
+
+    An unparseable value raises, exactly as `_parse_date` does. The tempting
+    alternative -- treat it as "not completed" -- would quietly turn a contract
+    change into a progress bar that reads 0%, which is a wrong number rendered
+    confidently rather than an error anyone would notice.
+    """
+    if raw is None or raw == "":
+        return None
+    text = str(raw)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (ValueError, TypeError) as exc:
+        raise InvalidTasksInputError(
+            f"{entity} '{field}' is not a valid datetime: {raw!r}."
         ) from exc
 
 
@@ -131,6 +160,11 @@ def map_task(data: DRFTaskResponse) -> Task:
     `is_overwhelmed` is stored on the entity as `server_is_overwhelmed` rather
     than being applied here, so the distinction between "the backend said no"
     and "the backend said nothing" survives all the way to the badge.
+
+    `completed_at` is mapped, not derived from `status`. The two agree on every
+    task the backend produces today, but only the timestamp says *when*, and
+    `GoalProgress` needs that; deriving it would put the completion time at
+    whenever this BFF happened to parse the payload.
     """
     priority = _parse_enum(data.importance, Priority, "Task", "importance")
     return Task(
@@ -143,6 +177,7 @@ def map_task(data: DRFTaskResponse) -> Task:
         importance=_derived_importance(priority),
         estimated_hours=_parse_hours(data.estimated_hours, "Task", "estimated_hours"),
         status=_parse_enum(data.status, TaskStatus, "Task", "status"),
+        completed_at=_parse_datetime(data.completed_at, "Task", "completed_at"),
         is_checked_by_llm=data.is_checked_by_llm,
         llm_evaluation_failed=data.llm_evaluation_failed,
         server_is_overwhelmed=data.is_overwhelmed,

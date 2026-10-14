@@ -219,11 +219,13 @@ class TestDerivedFromGoalBadge:
         # Whitespace-tolerant: the badge wraps across lines in the template.
         assert re.search(r">\s*Derived from Goal\s*</a>", page)
 
-    def test_the_badge_links_to_the_goals_list_that_exists(
-        self, respx_mock, authed_client
-    ):
-        """Not to `/goals/<id>`: this BFF has no per-goal route, so that href
-        would be a dead badge pointing at a 404."""
+    def test_the_badge_links_to_that_goal_s_own_page(self, respx_mock, authed_client):
+        """To `/goals/<id>/`, which now exists.
+
+        It used to link to the goal *list*, because there was no per-goal route
+        and a dead badge is worse than a vague one. That is the reason the badge
+        carries a goal id at all, so it is asserted rather than assumed.
+        """
         with respx_mock:
             _stub_backlog(respx_mock, [task_payload(goal_id=str(GOAL_ID))])
             body = authed_client.get("/tasks/").data.decode()
@@ -231,7 +233,7 @@ class TestDerivedFromGoalBadge:
         badge = re.search(
             r"<a[^>]*data-testid=\"derived-from-goal-badge\"[^>]*>", body
         ).group(0)
-        assert 'href="/tasks/goals/"' in badge
+        assert f'href="/tasks/goals/{GOAL_ID}/"' in badge
 
     def test_a_task_with_no_goal_shows_no_badge(self, respx_mock, authed_client):
         with respx_mock:
@@ -306,12 +308,18 @@ class TestCompletedTasksSection:
 class TestCompletedTasksHasNoWindow:
     """The "last 7 days" requirement, recorded as an absence.
 
-    The product asked for completed tasks from the last week. `TaskModel` has no
-    `completed_at` column and `TaskSerializer` sends no completion timestamp, so
-    there is nothing to filter on. These tests exist so that the gap is a test
-    that fails loudly when the backend gains the field -- rather than a filter
-    somebody quietly added on `updated_at`, which is "last touched", not "last
-    finished", and is wrong in both directions.
+    **The data for this window now exists and is still not used here.**
+    `TaskSerializer` declares `completed_at` read-only and nullable, so every
+    task payload carries it. What this page does *not* do is filter or re-sort by
+    it: the list is the backend's, in the backend's `-created_at, -id` order, and
+    slicing it in the BFF and presenting the result under a heading that implies
+    the backend did it would be a second, silent definition of recency.
+
+    So these tests assert the *absence of a window* rather than the absence of a
+    field -- a different assertion, and one that still has to hold now that the
+    tempting field is right there. Where a completion timestamp is read as a
+    measured figure, it is the goal progress bar, which reads `Task.completed_at`
+    through `GoalProgress` and says so in its caption.
     """
 
     def test_no_date_query_parameter_is_sent(self, respx_mock, authed_client):
@@ -321,20 +329,33 @@ class TestCompletedTasksHasNoWindow:
         with respx_mock:
             _stub_backlog(respx_mock, [task_payload()])
             authed_client.get("/tasks/")
+            # Read the call list *inside* the context. `respx_mock.calls` is
+            # cleared when the router stops, so this loop used to run over an
+            # empty list -- and `assert x in (...)` over nothing passes, so the
+            # test was green without ever looking at a request.
+            calls = list(respx_mock.calls)
 
-        for call in respx_mock.calls:
-            if call.request.url.path.endswith("/tasks/tasks/"):
-                params = dict(call.request.url.params)
-                assert params in ({}, {"status": "done"}), params
+        task_calls = [
+            call for call in calls if call.request.url.path.endswith("/tasks/tasks/")
+        ]
+        assert task_calls, "the page made no task read at all"
+        for call in task_calls:
+            params = dict(call.request.url.params)
+            assert params in ({}, {"status": "done"}), params
 
-    def test_the_completed_schema_declares_no_completion_timestamp(self):
-        """A schema field the serializer does not send is the exact failure mode
-        AGENTS.md rule 7 exists to prevent: it turns a missing backend feature
-        into a 500 instead of a visible gap. `completed_at` is absent here
-        because `TaskSerializer` does not emit it."""
+    def test_the_completion_timestamp_is_mapped_from_the_payload(self):
+        """`TaskSerializer` does emit `completed_at`, so the schema must read it.
+
+        The counterpart of the old assertion here. While the field was absent
+        from the serializer, declaring it would have been exactly the mistake
+        AGENTS.md rule 7 warns about -- a schema promising something the API does
+        not send -- and it was asserted here. Now that the API sends it, *not*
+        declaring it would be the mirror-image mistake: a real field silently
+        dropped, which costs a feature instead of raising a 500.
+        """
         from src.tasks.infrastructure.schemas import DRFTaskResponse
 
-        assert "completed_at" not in DRFTaskResponse.model_fields
+        assert "completed_at" in DRFTaskResponse.model_fields
 
 
 class TestUpdateTask:

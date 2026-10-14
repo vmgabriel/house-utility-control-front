@@ -39,6 +39,7 @@ from src.tasks.domain.entities import (
     DEFAULT_OVERWHELM_THRESHOLD,
     DailyPlan,
     Goal,
+    GoalProgress,
     Task,
 )
 from src.tasks.domain.value_objects import (
@@ -206,6 +207,18 @@ class TaskViewModel:
     is_overwhelmed: bool
     is_overdue: bool
     is_done: bool
+    #: When the backend finished this task, as an ISO-8601 string, or `""`.
+    #:
+    #: A string rather than a formatted date because it goes into a
+    #: `<time datetime="...">`, and the template has to be able to hand the
+    #: machine-readable value and the human-readable one from the same field.
+    completed_at: str
+    #: Whether the goal detail page counts this task towards its progress bar.
+    #:
+    #: Reads `Task.completed_at`, which is the same fact `Task.is_completed`
+    #: reads, so the row's badge and the bar can never disagree about which
+    #: tasks count.
+    is_completed: bool
     is_checked_by_llm: bool
     llm_evaluation_failed: bool
     description_preview: str
@@ -246,6 +259,10 @@ class TaskViewModel:
             is_overwhelmed=task.is_overwhelmed(threshold),
             is_overdue=task.is_overdue(today),
             is_done=task.status is TaskStatus.DONE,
+            completed_at=(
+                task.completed_at.isoformat() if task.completed_at is not None else ""
+            ),
+            is_completed=task.is_completed(),
             is_checked_by_llm=task.is_checked_by_llm,
             llm_evaluation_failed=task.llm_evaluation_failed,
             description_preview=_preview(description),
@@ -431,6 +448,106 @@ def _health_label(health: LlmHealth) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class GoalProgressViewModel:
+    """The goal progress bar: a percentage, two hour figures, and its width.
+
+    The percentage arrives already clamped to 0-100 from
+    `GoalProgress.percentage`, so nothing here has to defend against an
+    over-committed goal -- the arithmetic refuses to produce one, and this
+    layer does not second-guess it.
+    """
+
+    percentage: int
+    completed_label: str
+    total_label: str
+    remaining_label: str
+    #: Whether there are no estimated hours behind this goal at all.
+    #:
+    #: Drives a different sentence under the bar. "0h completed of 0h" on a goal
+    #: whose tasks have not been estimated reads as a measurement of zero
+    #: progress; the honest reading is that nothing has been estimated yet, and
+    #: the two should not be shown the same way.
+    has_estimates: bool
+
+    @classmethod
+    def from_domain(cls, progress: GoalProgress) -> GoalProgressViewModel:
+        return cls(
+            percentage=progress.percentage,
+            completed_label=str(progress.completed_hours),
+            total_label=str(progress.total_hours),
+            remaining_label=str(progress.remaining_hours),
+            has_estimates=not progress.is_empty,
+        )
+
+    @property
+    def summary(self) -> str:
+        """The bar's accessible name and the sentence above it.
+
+        One string rather than two because they must not be able to disagree: a
+        screen reader that heard "50%" and a caption that said 60% would be a
+        contradiction only one of the two could be checked against.
+        """
+        if not self.has_estimates:
+            return "No tasks have an estimate yet."
+        return (
+            f"{self.percentage}% complete "
+            f"({self.completed_label} of {self.total_label} estimated hours)"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GoalDetailViewModel:
+    """Everything `tasks/goal_detail.html` renders.
+
+    The goal and its tasks are kept apart from the progress rather than folded
+    into one: the progress is *derived* from the task list, and rendering both
+    from the same list means the bar cannot report a number the rows contradict.
+    """
+
+    goal: GoalViewModel
+    tasks: tuple[TaskViewModel, ...] = ()
+    progress: GoalProgressViewModel = field(
+        default_factory=lambda: GoalProgressViewModel.from_domain(
+            GoalProgress.from_tasks([])
+        )
+    )
+    #: How many of `tasks` are finished, for the heading's counts.
+    completed_count: int = 0
+
+    @classmethod
+    def build(
+        cls,
+        goal: Goal,
+        tasks: list[Task],
+        progress: GoalProgress,
+        *,
+        today: date,
+        threshold: Decimal = DEFAULT_OVERWHELM_THRESHOLD,
+    ) -> GoalDetailViewModel:
+        task_models = tuple(
+            TaskViewModel.from_domain(task, today=today, threshold=threshold)
+            for task in tasks
+        )
+        return cls(
+            goal=GoalViewModel.from_domain(goal, today=today),
+            tasks=task_models,
+            progress=GoalProgressViewModel.from_domain(progress),
+            completed_count=sum(1 for task in task_models if task.is_completed),
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the goal has no tasks filed under it at all.
+
+        Distinct from `GoalProgress.has_estimates`, and both matter: a goal with
+        no tasks and a goal whose tasks are all unestimated both render an empty
+        bar at 0%, but only one of them is a goal the user has not filed work
+        against yet.
+        """
+        return not self.tasks
+
+
+@dataclass(frozen=True, slots=True)
 class BacklogViewModel:
     """Everything `tasks/backlog.html` renders.
 
@@ -486,24 +603,30 @@ class BacklogViewModel:
 class CompletedTasksViewModel:
     """The finished-task section under the backlog.
 
-    Two things this deliberately does **not** claim, because the backend cannot
-    support either:
+    Three things this deliberately does **not** claim, and why.
 
-    * **No date window, and no "last 7 days".** `TaskModel` has no
-      `completed_at` column and `TaskSerializer` sends no completion time, so
-      there is nothing to window on. Filtering on `updated_at` instead would put
-      any recently-*edited* task at the top of a list headed "recently
-      completed", which is a different and wrong statement.
+    * **No date window, and no "last 7 days".** The data for one now exists --
+      `completed_at` is on every task payload -- but this method does not use it.
+      The list is the backend's, in the backend's order, which is `-created_at,
+      -id`; a window would mean filtering and re-sorting in the BFF and then
+      presenting the result as the backend's list. Where a *measured* completion
+      figure is wanted -- the goal progress bar -- `completed_at` is read
+      directly. Re-ordering this one is a separate change that has to be made
+      deliberately rather than arriving as a side effect of adding a field.
     * **No ordering claim.** The backend sorts on `-created_at, -id`, so this
       list is newest-*created* first. The heading says "by creation date" rather
       than "most recent first", because the latter would be a promise about a
       field the response does not contain.
 
-    Each row carries a Delete action and no Reopen one. Reopening is not
-    available: `Task.mark_as_doing` raises `TaskAlreadyDone` for a finished task
-    (a 409), and `status` is not on `UpdateTaskSerializer` either, so there is no
-    request the backend would accept. A disabled button would only advertise a
-    feature that does not exist.
+    Each row carries a Delete action and no Reopen one. **The backend can now
+    express a reopen** -- `POST /tasks/<id>/reopen/` exists, and it returns the
+    task with `completed_at` cleared -- so this is now a UI decision rather than
+    an API limitation, and the wording here is deliberately accurate about that:
+    the button is not missing because the request cannot be made. It is missing
+    because reopening is a deliberate user decision that deserves a confirmation
+    step, which no page has yet. Adding it is a small change and is recorded
+    rather than half-done: a reopen button without the confirmation would sit
+    one misclick away from discarding real work.
     """
 
     tasks: tuple[TaskViewModel, ...] = ()
@@ -557,6 +680,8 @@ __all__ = [
     "CompletedTasksViewModel",
     "DailyPlanViewModel",
     "EmptyDailyPlanViewModel",
+    "GoalDetailViewModel",
+    "GoalProgressViewModel",
     "GoalViewModel",
     "GoalsViewModel",
     "ImportanceViewModel",

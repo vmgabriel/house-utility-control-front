@@ -3,15 +3,19 @@
 
 {% block content %}
 {#
-    ONE top-level x-data scope. It owns only the date stepper -- the day's tasks
-    are rendered server-side and need no client state.
+    ONE top-level x-data scope. It owns the date stepper and the generation
+    button's pending state -- the day's tasks are rendered server-side and need
+    no client state.
 
     There is deliberately no second scope for the task rows. A plan's rows are
     read-only on this page: changing a task's status is a backlog action, and
     duplicating it here would mean two places to fix when the backend's status
-    transitions change.
+    transitions change. Nor does the generation form open one of its own: a form
+    with a single button does not need a scope of its own, and adding one would
+    be a second `x-data` root inside one page body, which is the failure this
+    rule is written against (AGENTS.md, rule 5).
 #}
-<div x-data="{}" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+<div x-data="{ generating: false }" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
     {# ---------------------------------------------------------------- #}
     {# Header and date stepper                                          #}
@@ -63,6 +67,46 @@
             <p class="mt-1 text-sm text-gray-500">
                 Add tasks from the backlog and ask the AI to build a plan for the day.
             </p>
+
+            {#
+                The generation action, offered for today only.
+
+                It lives here, in the empty state, rather than above the date
+                stepper because "the AI plans the day" is the answer to "this day
+                has nothing in it" -- offered next to the "Today" link it would
+                sit on days that are already planned and days the user is only
+                browsing, which is the wrong place for a button that queues work.
+
+                `can_generate` is computed in the view, not here. Deciding
+                "is this today" in the template would mean comparing an ISO
+                string against a date, which is exactly the comparison that
+                silently returns False forever.
+
+                The button is a plain form post, so it works with Alpine
+                unloaded. `generating` is the page's existing root state, used
+                only to disable the button while the form is in flight; giving
+                the form a scope of its own would be a second `x-data` root
+                inside one page body, which is the failure this rule exists to
+                prevent (AGENTS.md, rule 5).
+            #}
+            {% if can_generate %}
+            <form method="POST" action="{{ url_for('tasks.generate_daily_plan') }}"
+                  class="mt-4" @submit="generating = true">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="date" value="{{ selected_date }}">
+                <button type="submit" name="generate" value="1" :disabled="generating"
+                        data-testid="generate-daily-plan-button"
+                        class="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span x-show="!generating">Generate Daily Plan Manually</span>
+                    <span x-show="generating" x-cloak>Queeing&hellip;</span>
+                </button>
+            </form>
+            <p class="mt-2 text-xs text-gray-500">
+                Queues the assistant to plan the day from your backlog. The plan
+                appears here once it finishes.
+            </p>
+            {% endif %}
+
             <a href="{{ url_for('tasks.backlog') }}"
                class="mt-4 inline-block px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
                 Go to the backlog

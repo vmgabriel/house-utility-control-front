@@ -32,7 +32,13 @@ from datetime import date
 from typing import Protocol
 
 from src.tasks.domain.entities import DailyPlan, Goal, Task
-from src.tasks.domain.value_objects import LlmHealth, TaskEdits, TaskId
+from src.tasks.domain.value_objects import (
+    DailyPlanId,
+    GoalId,
+    LlmHealth,
+    TaskEdits,
+    TaskId,
+)
 
 
 class TasksApiClient(Protocol):
@@ -57,6 +63,34 @@ class TasksApiClient(Protocol):
         """List the authenticated user's goals."""
         ...
 
+    async def get_goal(self, access_token: str, goal_id: GoalId) -> Goal:
+        """Fetch one goal by id.
+
+        A separate method from :meth:`get_goals` because the backend serves it
+        from `GET /goals/<uuid:pk>/`, not by filtering the list: the ids are UUIDs
+        and the detail route is already indexed, so pulling every goal and
+        picking one out would be a full collection request to read a row the
+        backend has ready. `GoalNotFoundError` when the goal does not exist or is
+        not the caller's -- the backend answers 404 for both and the distinction
+        is not one the client should make.
+        """
+        ...
+
+    async def get_tasks_by_goal(self, access_token: str, goal_id: GoalId) -> list[Task]:
+        """List every task filed under `goal_id`, finished ones included.
+
+        **`goal_id`, not `status`.** The goal detail page needs the whole set:
+        its task list shows finished work alongside open work, and its progress
+        bar is the share of *all* the goal's estimated hours that are done, which
+        a `?status=done` read could not be computed from. The two filters are
+        independent query parameters on the one endpoint
+        (`TaskFilterQuerySerializer`), and this sends only the first.
+
+        An unfiltered-by-status read is the whole point, so the adapter must not
+        apply `get_backlog`'s "drop everything `done`" rule here.
+        """
+        ...
+
     async def get_daily_plan(
         self, access_token: str, plan_date: date
     ) -> DailyPlan | None:
@@ -65,6 +99,57 @@ class TasksApiClient(Protocol):
         `None` is a real answer, not a failure: most days have no plan until the
         user asks the LLM for one, and an empty day is a page to render rather
         than a 404.
+        """
+        ...
+
+    async def generate_daily_plan(self, access_token: str, plan_date: date) -> None:
+        """Ask the backend to have the assistant build `plan_date`'s plan.
+
+        Fire-and-forget, and deliberately returns nothing. The endpoint is
+        `POST /daily-plans/generate/`, which answers **202** with a
+        ``LlmQueuedSerializer``-shaped body and hands the work to Celery; the
+        plan does not exist when this returns and may never exist if the provider
+        is down. There is no `409` for "a plan already exists" -- the endpoint
+        will re-plan a day it has already planned -- so a caller that wanted the
+        short-circuit has to get it from :meth:`get_daily_plan`, which is exactly
+        what the daily page has already done by the time it renders the button.
+
+        :meth:`get_llm_health`'s docstring says why a navbar decoration must not
+        be able to take a page down; the same reasoning applies here, and is why
+        a 503 from this endpoint becomes `LlmUnavailableError` rather than
+        propagating as a 503 page.
+        """
+        ...
+
+    async def create_daily_plan(self, access_token: str, plan_date: date) -> DailyPlan:
+        """Open the plan for `plan_date`, returning the existing one if there is one.
+
+        Wraps `POST /daily-plans/`, which the backend routes to
+        `GetOrCreateDailyPlan`: it answers 201 with the day's plan whether it made
+        it or found it. That is why this returns a `DailyPlan` on the "already
+        there" path rather than `None` -- the caller cannot tell the two cases
+        apart from the status code, and does not need to.
+        """
+        ...
+
+    async def add_task_to_daily_plan(
+        self, access_token: str, plan_id: DailyPlanId, task_id: TaskId
+    ) -> DailyPlan:
+        """Schedule `task_id` on the day named by **`plan_id`**, and return it.
+
+        The day is addressed by **id, not by date**. The endpoint is
+        `POST /daily-plans/<uuid:pk>/add-task/`, with a plan UUID in the path and
+        a bare `{"task_id": ...}` in the body; there is no date-keyed variant, so
+        a caller holding only a date has to resolve the id first. Resolving it is
+        the use case's job rather than the adapter's, which is why this port takes
+        an id and a `CreateDailyPlan` exists to produce one.
+
+        The reloaded plan is the return value, not a convenience: the response is
+        the whole `DailyPlanSerializer`, so a caller can report the day's new
+        total without a second read.
+
+        Raises `TaskNotPlannableError` on the backend's 409 -- the task is already
+        scheduled, the day is full, or the task is already done.
         """
         ...
 
@@ -109,12 +194,16 @@ class TasksApiClient(Protocol):
         they are filtered and ordered differently server-side.
 
         **The ordering is the backend's, and it is not by completion time.** The
-        backend sorts on `-created_at, -id` and the task payload carries no
-        completion timestamp at all (see :meth:`Task.completed_at` on the
-        adapter), so this list runs from most-recently-*created* to oldest, and
-        a task created long ago and finished yesterday appears near the bottom.
-        Every caller that renders this list says so to the user rather than
-        presenting the order as recency.
+        backend sorts on `-created_at, -id`, so this list runs from
+        most-recently-*created* to oldest, and a task created long ago and
+        finished yesterday appears near the bottom. `completed_at` is available
+        on every task payload and is what `GoalProgress` reads, but this endpoint
+        does not sort on it and the BFF does not re-sort: the user was shown a
+        list the backend ordered, and re-ordering it in the client would mean a
+        second definition of recency that the other pages do not share. Every
+        caller that renders this list says "by creation date" rather than
+        "most recent first", because the latter would be a promise about an
+        ordering this method does not provide.
         """
         ...
 

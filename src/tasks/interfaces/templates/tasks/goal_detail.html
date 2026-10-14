@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.goal.name }} &middot; Goals{% endblock %}
+
+{% block content %}
+{#
+    ONE top-level x-data scope, present for the same reason `goals.html` has one:
+    the goal's description runs the shared markdown renderer in `x-init`, and an
+    element that runs JavaScript has to live inside a scope (AGENTS.md, rule 5).
+
+    It owns no state. The progress bar, the task list, and every action here are
+    server-rendered, so there is nothing for a second scope to share and none is
+    opened -- in particular not one per task row.
+
+    There are no per-row actions at all. A task is edited, completed, and
+    scheduled from the backlog, and duplicating those on this page would mean two
+    places to fix whenever the backend's transitions change. The one thing this
+    page does that the backlog cannot is answer "how far through this goal am
+    I", so it links there rather than acting.
+#}
+<div x-data="{}" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    {# ---------------------------------------------------------------- #}
+    {# Navigation                                                       #}
+    {# ---------------------------------------------------------------- #}
+    <div class="flex flex-wrap items-center gap-2 mb-6">
+        <a href="{{ url_for('tasks.goals') }}"
+           data-testid="back-to-goals"
+           class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            &larr; Goals
+        </a>
+        <a href="{{ url_for('tasks.backlog') }}"
+           class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Backlog
+        </a>
+        <a href="{{ url_for('tasks.daily') }}"
+           class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Daily plan
+        </a>
+    </div>
+
+    {# ---------------------------------------------------------------- #}
+    {# Goal header                                                      #}
+    {# ---------------------------------------------------------------- #}
+    <div class="mb-6">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <h1 class="text-2xl font-bold text-gray-900" data-testid="goal-detail-name">
+                {{ detail.goal.name }}
+            </h1>
+            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full {{ detail.goal.status_style }}">
+                {{ detail.goal.status_label }}
+            </span>
+        </div>
+
+        {% if detail.goal.has_description %}
+        {# The same sanitised client-side renderer the goals list and the
+           backlog rows use -- `gFm` is the shared helper, so markdown behaves
+           identically on all three pages. The `x-init` inherits this page's
+           single root scope; it opens none of its own. #}
+        <div class="mt-3 text-sm text-gray-700 prose prose-sm max-w-none"
+             x-init="$el.innerHTML = window.gFm.render($el.dataset.markdown)"
+             data-markdown="{{ detail.goal.description_markdown }}">
+            {{ detail.goal.description_preview }}
+        </div>
+        {% endif %}
+
+        {% if detail.goal.due_date %}
+        <p class="mt-2 text-sm text-gray-600">
+            Due <time datetime="{{ detail.goal.due_date }}">{{ detail.goal.due_date }}</time>
+            {% if detail.goal.is_overdue %}
+            <span class="ml-1 text-red-700 font-medium">overdue</span>
+            {% endif %}
+        </p>
+        {% endif %}
+    </div>
+
+    {# ---------------------------------------------------------------- #}
+    {# Progress                                                         #}
+    {#                                                                     #}
+    {# The bar is measured in *estimated hours completed*, which is the #}
+    {# finest unit of effort the API can honestly count: there is no    #}
+    {# time-tracking and no "hours spent" field anywhere in it. The     #}
+    {# caption says "estimated hours" for that reason -- a bar labelled #}
+    {# just "progress" would be read as time worked.                   #}
+    {# ---------------------------------------------------------------- #}
+    <div class="p-5 mb-6 bg-white rounded-lg shadow-sm border border-gray-200"
+         data-testid="goal-progress">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 class="font-semibold text-gray-900">Progress</h2>
+            <p class="text-sm font-semibold text-gray-900"
+               data-testid="goal-progress-percentage">
+                {{ detail.progress.percentage }}%
+            </p>
+        </div>
+
+        {# `role="progressbar"` with the value spelled out in `aria-label` too:
+           the bar's colour is the whole signal visually, and that is exactly
+           what a screen reader cannot use. #}
+        <div class="mt-3 h-2.5 bg-gray-200 rounded-full overflow-hidden"
+             role="progressbar"
+             aria-valuemin="0"
+             aria-valuemax="100"
+             aria-valuenow="{{ detail.progress.percentage }}"
+             aria-label="{{ detail.progress.summary }}">
+            <div class="h-full bg-green-500 transition-all"
+                 style="width: {{ detail.progress.percentage }}%"></div>
+        </div>
+
+        {% if detail.progress.has_estimates %}
+        <p class="mt-2 text-xs text-gray-600"
+           data-testid="goal-progress-hours">
+            {{ detail.progress.completed_label }} of {{ detail.progress.total_label }}
+            estimated hours complete &middot;
+            {{ detail.progress.remaining_label }} left
+        </p>
+        {% else %}
+        {# Said separately from "0%". A goal whose tasks carry no estimates has
+           not been measured, and "0h of 0h complete" reads as a measurement
+           rather than as the absence of one. #}
+        <p class="mt-2 text-xs text-gray-500" data-testid="goal-progress-unmeasured">
+            No tasks have an estimate yet, so there is nothing to measure progress
+            against.
+        </p>
+        {% endif %}
+    </div>
+
+    {# ---------------------------------------------------------------- #}
+    {# The goal's tasks                                                 #}
+    {# ---------------------------------------------------------------- #}
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200">
+        <div class="flex flex-wrap items-baseline justify-between gap-2 p-5 border-b border-gray-200">
+            <h2 class="font-semibold text-gray-900">Tasks</h2>
+            <p class="text-xs text-gray-500">
+                {{ detail.tasks|length }} total &middot;
+                {{ detail.completed_count }} completed
+            </p>
+        </div>
+
+        {% if detail.is_empty %}
+            <p class="p-8 text-center text-sm text-gray-500" data-testid="goal-detail-empty">
+                No tasks are filed under this goal yet.
+            </p>
+        {% else %}
+        <ul class="divide-y divide-gray-200" data-testid="goal-task-list">
+            {% for task in detail.tasks %}
+            <li class="p-5 {% if task.is_done %}bg-gray-50{% endif %}"
+                data-testid="goal-task-row" data-task-id="{{ task.id }}">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <h3 class="font-medium {% if task.is_done %}line-through text-gray-400{% else %}text-gray-900{% endif %}">
+                                {{ task.name }}
+                            </h3>
+                            {% if task.is_overwhelmed %}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800">
+                                &#9888;&#65039; Tarea grande
+                            </span>
+                            {% endif %}
+                        </div>
+
+                        <p class="mt-1 text-xs text-gray-500">
+                            {{ task.status_label }}
+                            {%- if task.estimated_hours_label != '—' %}
+                                &middot; {{ task.estimated_hours_label }} estimated
+                            {%- endif %}
+                            {%- if task.due_date %}
+                                &middot; due <time datetime="{{ task.due_date }}">{{ task.due_date }}</time>
+                            {%- endif %}
+                        </p>
+
+                        {# When it was finished, from the only field on the payload
+                           that says so. Not rendered for open tasks: an absent
+                           timestamp here is the normal case, and a row of empty
+                           date slots reads as something missing. #}
+                        {% if task.completed_at %}
+                        <p class="mt-1 text-xs text-green-700"
+                           data-testid="goal-task-completed-at">
+                            Completed
+                            <time datetime="{{ task.completed_at }}">{{ task.completed_at }}</time>
+                        </p>
+                        {% endif %}
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        {# Keyed on `is_completed`, the same field the progress bar
+                           sums over, so a row can never be badged "Done" while
+                           the bar counts it as outstanding. #}
+                        {% if task.is_completed %}
+                        <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-800"
+                              data-testid="goal-task-completed-badge">
+                            &#10003; Completed
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
+                            Pending
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        <div class="p-4 border-t border-gray-200 bg-gray-50">
+            <a href="{{ url_for('tasks.backlog') }}"
+               class="text-sm font-medium text-blue-700 hover:text-blue-900">
+                Open the backlog to add or schedule tasks &rarr;
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

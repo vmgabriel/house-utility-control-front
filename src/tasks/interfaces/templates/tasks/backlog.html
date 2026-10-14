@@ -243,14 +243,20 @@
                             {#
                                 Shown only when the task is actually filed under a
                                 goal (`goal_id` is a nullable FK, so most rows have
-                                none). Links to the goals *list*, not to a per-goal
-                                page: this BFF has no `/goals/<id>` route, and a
-                                link to one would be a dead badge. Deep-linking to
-                                a single goal needs a detail page first.
+                                none).
+
+                                It deep-links to that goal's detail page. It did
+                                not for a long time, because no such page
+                                existed and a link to one is a dead badge -- the
+                                link went to the goal *list* instead, which is a
+                                page that exists but not one this badge's title
+                                ("created from a goal") promises. Now that
+                                `/tasks/goals/<id>/` is a page, the badge says
+                                what it means and lands on the goal.
                             #}
                             {% if task.goal_id %}
                             <a data-testid="derived-from-goal-badge"
-                               href="{{ url_for('tasks.goals') }}"
+                               href="{{ url_for('tasks.goal_detail', goal_id=task.goal_id) }}"
                                title="This task was created from a goal."
                                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 hover:bg-purple-200">
                                 Derived from Goal
@@ -326,6 +332,48 @@
                        method -- see the note at the top of this file on why user
                        text must not be interpolated into a `x-data` expression. #}
                     <div class="flex items-center gap-2">
+                        {#
+                            "Add to today's plan", as a plain form post.
+
+                            A form rather than a `fetch` button, and deliberately
+                            so: this is the one row action whose result the user
+                            cannot see on this page. The decompose button needs
+                            client state because it reports a queue result in
+                            place; adding a task to a day changes a page the
+                            backlog does not show, so the honest feedback is the
+                            redirect and the flash, both of which a form gives for
+                            free and which keep working with Alpine unloaded.
+
+                            The date is not sent. The route resolves "today" from
+                            the injected clock and resolves the day's plan id
+                            itself -- see `AddTaskToTodayPlanUseCase` for why
+                            that is a use case's job and not something the form
+                            can know. Sending a date here would be a second,
+                            template-side definition of which day this is.
+
+                            Rendered only for rows that are not done. The backend
+                            answers 409 `TaskAlreadyDone` for a finished task,
+                            and a button that is present and always fails is worse
+                            than one that was never offered -- but note the
+                            check is on `status`, while the *server* keys the
+                            refusal on `completed_at`. They agree today; if the
+                            backend ever diverges them, the backend's answer is
+                            what the user sees.
+                        #}
+                        {% if not task.is_done %}
+                        <form method="POST"
+                              action="{{ url_for('tasks.add_task_to_daily_plan', task_id=task.id) }}"
+                              class="inline" data-testid="add-to-plan-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit"
+                                    data-testid="add-to-plan-button"
+                                    title="Schedule this task on today's plan"
+                                    class="px-3 py-2 text-xs font-medium text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                                Add to today
+                            </button>
+                        </form>
+                        {% endif %}
+
                         <button type="button"
                                 data-testid="edit-button"
                                 @click="openEdit($el)"
@@ -369,14 +417,22 @@
     {# ---------------------------------------------------------------- #}
     {# Completed tasks                                                 #}
     {# ---------------------------------------------------------------- #}
-    {# The heading says "Completed" and nothing about a window. The product
-       asked for "the last 7 days", and the backend cannot answer that: there is
-       no `completed_at` on `TaskModel` and none on `TaskSerializer`, so nothing
-       records *when* a task was finished. `updated_at` is the nearest field and
-       it is the wrong one -- renaming a task or promoting its priority moves it,
-       so a week-old task finished yesterday would sort to the bottom and a task
-       finished last month but renamed today would sort to the top. The list is
-       therefore ordered by the backend's `-created_at` and labelled as such. #}
+    {# The heading says "Completed" and nothing about a window, and the count line
+       says "newest created first".
+
+       Both are about *ordering*, not about data: the backend sorts on
+       `-created_at, -id` and this list is rendered in that order. `completed_at`
+       is on every payload now, so a "finished this week" list is expressible --
+       but it would be the BFF filtering and re-sorting a list the backend
+       ordered, and then presenting the result under a heading that implies the
+       backend did it. The ordering this page actually has is stated instead.
+
+       What the missing Reopen button is *not* about is the backend: `POST
+       /tasks/<id>/reopen/` exists and works. It is absent because reopening
+       throws away real work and deserves a confirmation step, which is a UI
+       decision this page has not made yet -- not because the API cannot express
+       it. Rendered as a disabled button it would look broken; rendered without
+       one, the section simply offers Delete. #}
     <section class="mt-10" aria-labelledby="completed-heading">
         <div class="flex flex-wrap items-baseline justify-between gap-2 mb-3">
             <h2 id="completed-heading" class="text-lg font-semibold text-gray-900">
@@ -416,7 +472,7 @@
                             </span>
                             {% if task.goal_id %}
                             <a data-testid="completed-derived-from-goal-badge"
-                               href="{{ url_for('tasks.goals') }}"
+                               href="{{ url_for('tasks.goal_detail', goal_id=task.goal_id) }}"
                                title="This task was created from a goal."
                                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 hover:bg-purple-200">
                                 Derived from Goal
@@ -430,14 +486,15 @@
                         {% endif %}
                     </div>
 
-                    {# Delete only, and no Reopen. Reopening a finished task is
-                       not something this API can express: `status` is not on
-                       `UpdateTaskSerializer`, and the only inbound transition,
-                       `POST /tasks/<id>/mark-doing/`, answers 409
-                       (`TaskAlreadyDone`) precisely because a completed task is
-                       meant to stay completed. Rendering a Reopen button that
-                       cannot work would advertise a feature the product does not
-                       have; a disabled one would advertise it more loudly. #}
+                    {# Delete only, and no Reopen. The backend *can* reopen a finished task
+                       -- `POST /tasks/<id>/reopen/` returns it to `todo` and
+                       clears `completed_at` -- so this is a product decision,
+                       not an API limitation: reopening discards real work, and
+                       it wants a confirmation step that does not exist yet. A
+                       one-click Reopen would be one misclick from throwing a
+                       finished task away, which is a worse outcome than not
+                       offering the action at all. Recorded here so the absence
+                       reads as "not built yet" rather than "not possible". #}
                     <div class="flex items-center gap-2">
                         <button type="button"
                                 data-testid="completed-delete-button"

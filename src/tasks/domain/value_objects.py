@@ -266,6 +266,21 @@ class Duration:
         # is what keeps that from raising inside `sum()` over a day's tasks.
         return Duration((self.amount + other.amount).quantize(HOUR_STEP))
 
+    def __sub__(self, other: Duration) -> Duration:
+        """The remainder, which cannot be negative.
+
+        Negative on purpose even though the class is non-negative by contract:
+        "hours left to do" is the whole point of `GoalProgress.remaining_hours`,
+        and a *negative* remainder would be a real answer -- a goal whose tasks
+        sum to more hours than were counted against it -- rather than a bug. The
+        caller that could produce it (`GoalProgress`) validates the ordering in
+        its own `__post_init__`, so this raising is a backstop on hand-built
+        values rather than the only guard.
+        """
+        if not isinstance(other, Duration):
+            return NotImplemented
+        return Duration((self.amount - other.amount).quantize(HOUR_STEP))
+
     def __str__(self) -> str:
         # Trimmed, not zero-padded: "2.5h" reads better than "2.50h" and the
         # trailing zero carries no information.

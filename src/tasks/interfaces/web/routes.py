@@ -40,7 +40,13 @@ from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.domain.exceptions import DomainException
 from src.shared.http.drf_client import ServiceUnavailableError
 from src.tasks.domain.entities import DEFAULT_OVERWHELM_THRESHOLD
-from src.tasks.domain.exceptions import LlmUnavailableError, TaskNotFoundError
+from src.tasks.domain.exceptions import (
+    DailyPlanNotFoundError,
+    GoalNotFoundError,
+    LlmUnavailableError,
+    TaskNotFoundError,
+    TaskNotPlannableError,
+)
 from src.tasks.domain.value_objects import (
     Duration,
     GoalId,
@@ -54,6 +60,7 @@ from src.tasks.interfaces.viewmodels import (
     CompletedTasksViewModel,
     DailyPlanViewModel,
     EmptyDailyPlanViewModel,
+    GoalDetailViewModel,
     GoalsViewModel,
     LlmHealthViewModel,
     TaskViewModel,
@@ -306,6 +313,42 @@ async def goals():
     )
 
 
+@tasks_bp.route("/goals/<uuid:goal_id>/")
+async def goal_detail(goal_id):
+    """One goal, its tasks, and how far through it the user is.
+
+    Reached by clicking a card on `/tasks/goals/`. The card list carries a
+    `task_count` but no hours, and no progress figure exists anywhere in the
+    backend, so the bar is computed from the same task list the page renders --
+    one read feeding both, which is what keeps the bar from reporting a number
+    the rows beneath it contradict.
+
+    A goal that does not exist, or is not the caller's, answers the same 404
+    flash as the delete routes: the backend returns 404 for both cases and the
+    page must not become a way to probe for other people's goal ids.
+    """
+    access_token = _access_token()
+    if not access_token:
+        return redirect(url_for("auth.login"))
+
+    today = current_app.clock.today()
+    try:
+        goal, tasks, progress = await current_app.get_goal_detail_use_case.execute(
+            access_token, GoalId(str(goal_id))
+        )
+    except GoalNotFoundError:
+        flash("That goal no longer exists.", "error")
+        return redirect(url_for("tasks.goals"))
+
+    return render_template(
+        "tasks/goal_detail.html",
+        detail=GoalDetailViewModel.build(
+            goal, tasks, progress, today=today, threshold=_overwhelm_threshold()
+        ),
+        today=today.isoformat(),
+    )
+
+
 @tasks_bp.route("/daily/")
 async def daily():
     """The plan for one day, with that day's tasks resolved from the backlog.
@@ -336,8 +379,14 @@ async def daily():
             tasks=(),
             missing_task_count=0,
             max_hours=max_hours,
-            today=today,
+            today=today.isoformat(),
             selected_date=target.isoformat(),
+            # The generation button is offered for *today only*. The endpoint
+            # accepts any date, but "plan my day" is what a user reaching an
+            # empty day means; offering it for a past date would queue a plan
+            # nobody will ever read, and the empty state for a past day is more
+            # usefully explained by the stepper above it.
+            can_generate=target == today,
         )
 
     # Ordered by the plan's own `task_ids`, not by the backlog's ordering: the
@@ -363,8 +412,11 @@ async def daily():
         ],
         missing_task_count=missing,
         max_hours=max_hours,
-        today=today,
+        today=today.isoformat(),
         selected_date=target.isoformat(),
+        # A planned day has nothing to generate: the button lives in the empty
+        # state, so this is False on every render that has a plan.
+        can_generate=False,
     )
 
 
@@ -485,6 +537,93 @@ async def delete_task(task_id):
         flash(str(exc), "error")
     else:
         flash("Task deleted.", "success")
+    return redirect(_back_target())
+
+
+@tasks_bp.route("/daily/generate/", methods=["POST"])
+async def generate_daily_plan():
+    """Queue the assistant's plan for one day.
+
+    Rendered only in the daily page's empty state and only for today (see the
+    `can_generate` flag in `daily`), so `date` arrives from the form rather than
+    being recomputed here. It is still read from the form and not taken from the
+    clock, because the two are not the same thing: a page rendered for today and
+    submitted tomorrow must plan the day the user was looking at.
+
+    The flash says "queued". That is not hedging -- the backend answers 202 and
+    hands the work to Celery, and the plan appears on a later load if the worker
+    succeeds at all. Telling the user their day has been planned would be a claim
+    this request cannot support.
+    """
+    access_token = _access_token()
+    if not access_token:
+        return redirect(url_for("auth.login"))
+    if not _require_csrf():
+        flash("Invalid CSRF token.", "error")
+        return redirect(url_for("tasks.daily"))
+
+    target = _parse_date(request.form.get("date"), "date")
+    if target is None:
+        target = current_app.clock.today()
+
+    try:
+        await current_app.generate_daily_plan_use_case.execute(access_token, target)
+    except LlmUnavailableError:
+        # Deliberately not re-raised, for the same reason as the decompose
+        # triggers: the AI is optional, and a 503 page would deny the user the
+        # daily view they came from.
+        flash("The AI service is unavailable right now. Try again later.", "error")
+    except DomainException as exc:
+        flash(str(exc), "error")
+    else:
+        flash(
+            "Daily plan queued. The plan appears here once the AI finishes.",
+            "success",
+        )
+    return redirect(url_for("tasks.daily", date=target.isoformat()))
+
+
+@tasks_bp.route("/<uuid:task_id>/add-to-plan/", methods=["POST"])
+async def add_task_to_daily_plan(task_id):
+    """Schedule one backlog task onto today's plan.
+
+    The button is on every backlog row, so this route is reached with the whole
+    backlog in front of the user rather than from a day they are looking at.
+    Which is why the day's total is repeated in the flash: the operation
+    succeeded, but the consequence the user cannot see -- how much room is left
+    -- is exactly the thing a row action should tell them.
+    """
+    access_token = _access_token()
+    if not access_token:
+        return redirect(url_for("auth.login"))
+    if not _require_csrf():
+        flash("Invalid CSRF token.", "error")
+        return redirect(url_for("tasks.backlog"))
+
+    try:
+        plan = await current_app.add_task_to_daily_plan_use_case.execute(
+            access_token, _parse_task_id(str(task_id))
+        )
+    except TaskNotPlannableError as exc:
+        # The backend's own wording, not a generic one: it distinguishes "already
+        # on the plan", "the day is full", and "that task is done", and those
+        # need three different reactions from the user.
+        flash(str(exc), "error")
+    except DailyPlanNotFoundError:
+        flash("Today's plan could not be opened.", "error")
+    except TaskNotFoundError:
+        flash("That task no longer exists.", "error")
+    except DomainException as exc:
+        flash(str(exc), "error")
+    else:
+        # `total_hours` is the backend's own sum for the reloaded day and is
+        # `None` only on a plan that carries no hour figures at all, in which
+        # case the sentence says so rather than printing "None".
+        planned = f"{plan.total_hours} planned" if plan.total_hours else "scheduled"
+        flash(
+            f"Added to today's plan ({planned}). See it on the daily plan.",
+            "success",
+        )
     return redirect(_back_target())
 
 

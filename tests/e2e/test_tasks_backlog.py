@@ -9,11 +9,17 @@ The DRF boundary is stubbed rather than `page.route()`d, per the module note in
 `drf_stub.py`: every DRF call is made by Flask, never by the browser, so a
 Playwright route would mock nothing while the suite appeared to pass.
 
-Nothing here exercises a "last 7 days" window or a Reopen action. Neither is
-expressible against the current backend -- there is no `completed_at` on
-`TaskModel` or `TaskSerializer`, and `Task.mark_as_doing` refuses a finished task
-with `TaskAlreadyDone`. `TestAbsentBackendFeatures` records that as an absence
-so the gap is visible and breaks loudly if the backend gains the capability.
+Nothing here exercises a "last 7 days" window or a Reopen action.
+
+* The window is not a data gap any more -- `completed_at` is on every task
+  payload -- but this list is still the backend's, in the backend's
+  `-created_at, -id` order, and narrowing it in the BFF would be a second,
+  silent definition of recency. The heading says what the order actually is.
+* Reopen is a product decision: `POST /tasks/<id>/reopen/` exists and works, but
+  it discards real work and wants a confirmation step no page has yet.
+
+`TestAbsentBackendFeatures` records both as absences, with the reasons that are
+true now rather than the ones that were true when this file was written.
 """
 
 from __future__ import annotations
@@ -337,11 +343,16 @@ class TestDerivedFromGoalBadge:
             ).get_by_test_id("derived-from-goal-badge")
         ).to_have_count(0)
 
-    def test_clicking_it_lands_on_the_goals_page(
+    def test_clicking_it_lands_on_that_goal_s_own_page(
         self, page: Page, authed: Page, mock_drf
     ):
-        """It points at `/tasks/goals/`, which exists -- not `/goals/<id>`, which
-        this BFF has no route for and would 404."""
+        """It points at `/tasks/goals/<id>/`.
+
+        It used to point at the goal *list*, because there was no per-goal route
+        and a dead badge is worse than a vague one. Now that the page exists, the
+        badge says what it means -- "created from a goal" -- and lands on the
+        goal, which is the only reading that makes the title true.
+        """
         seed(
             mock_drf,
             [OPEN_TASK],
@@ -360,8 +371,8 @@ class TestDerivedFromGoalBadge:
 
         page.get_by_test_id("derived-from-goal-badge").first.click()
 
-        expect_path(page, "/tasks/goals/")
-        expect(page.locator("h1")).to_have_text("Goals")
+        expect_path(page, f"/tasks/goals/{GOAL_ID}/")
+        expect(page.get_by_test_id("goal-detail-name")).to_have_text("Ship v2")
 
 
 class TestCompletedTasksSection:
@@ -456,15 +467,23 @@ class TestCompletedTasksSection:
 class TestAbsentBackendFeatures:
     """What this BFF deliberately does not offer, asserted as an absence.
 
-    Each of these is a capability the backend does not have. If it gains one,
-    these tests fail and point at the place to implement it -- which is the
-    point of writing them down rather than leaving them to a code comment.
+    **One of these used to be "the backend cannot do this" and is no longer.**
+    The class is still the right home for them -- an action that is missing on
+    purpose is worth pinning down either way -- but the *reasons* have changed,
+    and a comment that says "the API cannot express this" when it now can is
+    worse than no comment. The reopen case below is written as a product
+    decision (it needs a confirmation step) rather than an API limitation.
     """
 
     def test_there_is_no_reopen_action(self, page: Page, authed: Page, mock_drf):
-        """`status` is not on `UpdateTaskSerializer`, and the only inbound
-        transition, `POST /tasks/<id>/mark-doing/`, answers 409
-        (`TaskAlreadyDone`) for a finished task."""
+        """The backend *can* reopen -- `POST /tasks/<id>/reopen/` exists and
+        clears `completed_at`. It is not offered here because reopening discards
+        real work and wants a confirmation step, which no page has yet.
+
+        Recorded as an absence so that adding the button is a deliberate change
+        to this assertion rather than something that happens because a route was
+        written.
+        """
         seed(mock_drf, [OPEN_TASK, DONE_TASK])
         page.goto("/tasks/")
 
@@ -493,16 +512,34 @@ class TestAbsentBackendFeatures:
             and "status" in r.json
         ]
 
-    def test_there_is_no_manual_daily_plan_generation_button(
+    def test_a_finished_task_is_not_offered_a_plan_action(
         self, page: Page, authed: Page, mock_drf
     ):
-        """`GenerateDailyPlanWithLlm` is wired into the backend's DI container but
-        is exposed by no URL and no view method, so there is no endpoint a button
-        could post to. The use case is not written either: a port method pointing
-        at a route that does not exist would be a lie the E2E suite could not
-        catch and the integration suite would have to mock into existence."""
+        """The backend answers 409 `TaskAlreadyDone` for one, so a button that
+        is always there would be one that always fails."""
+        seed(mock_drf, [OPEN_TASK, DONE_TASK])
+        page.goto("/tasks/")
+
+        # The open task carries the action; the finished one appears only in the
+        # completed section, which offers Delete alone.
+        expect(page.get_by_test_id("add-to-plan-button")).to_have_count(1)
+        completed = page.locator(
+            "section", has=page.get_by_test_id("completed-task-list")
+        )
+        expect(completed.get_by_test_id("add-to-plan-button")).to_have_count(0)
+
+    def test_the_completed_section_offers_no_daily_plan_generation_button(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        """The opposite: there used to be no way to generate a plan at all.
+
+        `POST /daily-plans/generate/` now exists, and the daily page offers it
+        for an unplanned today. This test moved from `TestAbsentBackendFeatures`
+        because it is now the assertion that the button is *scoped* -- the daily
+        page, and only for a day with no plan.
+        """
         seed(mock_drf, [OPEN_TASK])
-        page.goto("/tasks/daily/")
+        page.goto("/tasks/")
 
         expect(
             page.get_by_role("button", name="Generate Daily Plan Manually")

@@ -13,11 +13,19 @@ from the serializer shipped and then failed against the live API:
 * `test_daily_plan_reads_the_nested_task_list` -- the schema expected a flat
   ``task_ids`` array; the API nests full task objects, so every day mapped to an
   empty plan and the daily page rendered blank with no error to find.
+
+One exists because a field was read as absent when it was not:
+`TaskSerializer.completed_at` **is** emitted, read-only and nullable. For a long
+while this schema did not declare it, on the documented reasoning that a schema
+field the serializer does not send turns a missing feature into a 500. That
+reasoning was sound and the conclusion was still wrong -- the same mistake in the
+other direction costs a feature silently, which is what goal progress was
+measuring from. `TestCompletedAtMapping` pins the real shape down.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -52,6 +60,9 @@ TASK_PAYLOAD = {
     "is_overwhelmed": True,
     "is_checked_by_llm": False,
     "llm_evaluation_failed": False,
+    # `TaskSerializer` declares this read-only and `allow_null`, so the key is
+    # on every payload and is `null` while the task is open.
+    "completed_at": None,
     "created_at": "2026-10-14T09:00:00Z",
     "updated_at": "2026-10-14T09:00:00Z",
 }
@@ -143,6 +154,64 @@ class TestTaskMapping:
         payload = {**TASK_PAYLOAD, "due_date": "2026-11-01T18:00:00Z"}
         with pytest.raises(InvalidTasksInputError):
             map_task(DRFTaskResponse.model_validate(payload))
+
+
+class TestCompletedAtMapping:
+    """The one field that says *when* a task was finished."""
+
+    def test_an_open_task_maps_the_null_to_none(self):
+        task = map_task(DRFTaskResponse.model_validate(TASK_PAYLOAD))
+
+        assert task.completed_at is None
+        assert task.is_completed() is False
+
+    def test_a_finished_task_keeps_the_time_not_only_the_date(self):
+        """The time component is the point of the field.
+
+        Two tasks finished on the same afternoon are the same day, and
+        distinguishing them -- or ordering them -- is the only reason the
+        timestamp exists rather than a boolean.
+        """
+        task = map_task(
+            DRFTaskResponse.model_validate(
+                {**TASK_PAYLOAD, "completed_at": "2026-10-14T16:45:31.480Z"}
+            )
+        )
+
+        assert task.completed_at == datetime(2026, 10, 14, 16, 45, 31, 480000, UTC)
+        assert task.is_completed() is True
+
+    def test_a_naive_timestamp_is_left_naive(self):
+        """No timezone is invented.
+
+        DRF sends UTC with a `Z`, and Python's parser handles it. A payload
+        without an offset says nothing about one, and stamping it with the
+        server's local zone would assert an offset the wire never carried.
+        """
+        task = map_task(
+            DRFTaskResponse.model_validate(
+                {**TASK_PAYLOAD, "completed_at": "2026-10-14T16:45:31"}
+            )
+        )
+
+        assert task.completed_at == datetime(2026, 10, 14, 16, 45, 31)
+        assert task.completed_at.tzinfo is None
+
+    def test_an_unparseable_timestamp_is_reported_not_treated_as_absent(
+        self,
+    ):
+        """The tempting failure here is the quiet one.
+
+        Mapping an unparseable value to `None` would make the task read as not
+        completed, which lowers a progress bar and changes a badge -- a wrong
+        number rendered confidently, with no error anywhere to notice it by.
+        """
+        with pytest.raises(InvalidTasksInputError, match="completed_at"):
+            map_task(
+                DRFTaskResponse.model_validate(
+                    {**TASK_PAYLOAD, "completed_at": "last Tuesday"}
+                )
+            )
 
 
 class TestLlmHealthMapping:

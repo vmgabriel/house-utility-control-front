@@ -40,6 +40,35 @@ class TaskNotFoundError(DomainException):
     """Raised when a task does not exist within the requesting user's scope."""
 
 
+class GoalNotFoundError(DomainException):
+    """Raised when a goal does not exist within the requesting user's scope."""
+
+
+class DailyPlanNotFoundError(DomainException):
+    """Raised when a daily plan does not exist within the requesting user's scope."""
+
+
+class TaskNotPlannableError(DomainException):
+    """Raised when the backend refuses to schedule a task onto a daily plan.
+
+    This is the backend's `409 Conflict`, not a validation failure. The backend
+    raises it from `AddTaskToDailyPlan` for three distinct reasons -- the task is
+    already on the plan (`TaskAlreadyInPlan`), the day is full
+    (`DailyPlanFull`), and the task is already done (`TaskAlreadyDone`) -- and it
+    reports all three with `409` rather than `400`.
+
+    That choice is the backend's and it is a good one: "you cannot schedule this"
+    is a planning decision rather than a malformed request, and answering `400`
+    would tell the client to fix a payload that is already correct. So the three
+    are deliberately *not* split into three BFF exceptions: they carry different
+    advice, but distinguishing them would mean parsing free-text detail strings,
+    which is exactly the coupling to an error message that breaks on a wording
+    change. The backend's own `detail` is carried through and shown verbatim
+    instead, so the user gets the precise reason without the BFF depending on its
+    wording.
+    """
+
+
 class LlmUnavailableError(DomainException):
     """Raised when an LLM-backed action was requested but the backend is down.
 

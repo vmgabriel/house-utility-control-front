@@ -18,11 +18,14 @@ from dataclasses import dataclass
 from src.shared.domain.ports.clock import Clock
 from src.shared.infrastructure.clock import SystemClock
 from src.tasks.application.use_cases import (
+    AddTaskToTodayPlanUseCase,
     CreateTaskUseCase,
     DeleteTaskUseCase,
+    GenerateDailyPlanUseCase,
     GetBacklogUseCase,
     GetCompletedTasksUseCase,
     GetDailyPlanUseCase,
+    GetGoalDetailUseCase,
     GetGoalsUseCase,
     GetLlmHealthUseCase,
     TriggerLlmDecompositionUseCase,
@@ -41,7 +44,10 @@ class TasksUseCases:
     delete_task: DeleteTaskUseCase
     get_completed_tasks: GetCompletedTasksUseCase
     get_goals: GetGoalsUseCase
+    get_goal_detail: GetGoalDetailUseCase
     get_daily_plan: GetDailyPlanUseCase
+    generate_daily_plan: GenerateDailyPlanUseCase
+    add_task_to_daily_plan: AddTaskToTodayPlanUseCase
     get_llm_health: GetLlmHealthUseCase
     trigger_llm_evaluation: TriggerLlmEvaluationUseCase
     trigger_llm_decomposition: TriggerLlmDecompositionUseCase
@@ -55,7 +61,10 @@ class TasksUseCases:
         ("delete_task_use_case", "delete_task"),
         ("get_completed_tasks_use_case", "get_completed_tasks"),
         ("get_goals_use_case", "get_goals"),
+        ("get_goal_detail_use_case", "get_goal_detail"),
         ("get_daily_plan_use_case", "get_daily_plan"),
+        ("generate_daily_plan_use_case", "generate_daily_plan"),
+        ("add_task_to_daily_plan_use_case", "add_task_to_daily_plan"),
         ("get_llm_health_use_case", "get_llm_health"),
         ("trigger_llm_evaluation_use_case", "trigger_llm_evaluation"),
         ("trigger_llm_decomposition_use_case", "trigger_llm_decomposition"),
@@ -90,7 +99,12 @@ def build_tasks_use_cases(
         delete_task=DeleteTaskUseCase(tasks_client=tasks_client),
         get_completed_tasks=GetCompletedTasksUseCase(tasks_client=tasks_client),
         get_goals=GetGoalsUseCase(tasks_client=tasks_client),
+        get_goal_detail=GetGoalDetailUseCase(tasks_client=tasks_client),
         get_daily_plan=GetDailyPlanUseCase(
+            tasks_client=tasks_client, clock=resolved_clock
+        ),
+        generate_daily_plan=GenerateDailyPlanUseCase(tasks_client=tasks_client),
+        add_task_to_daily_plan=AddTaskToTodayPlanUseCase(
             tasks_client=tasks_client, clock=resolved_clock
         ),
         get_llm_health=GetLlmHealthUseCase(tasks_client=tasks_client),

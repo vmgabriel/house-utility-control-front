@@ -12,6 +12,10 @@
     It is one root, not one per card. A card-level `x-data` would open a second
     root inside a single page body, which is the failure AGENTS.md's Alpine
     rule is written against, and it would scale with the number of goals.
+
+    The cards themselves are plain links, with no Alpine involved, so making a
+    card navigable to its detail page did not add state to this page or a second
+    scope to it.
 #}
 <div x-data="{}" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
@@ -44,8 +48,26 @@
     {% else %}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {% for goal in goals.goals %}
-            <article class="flex flex-col p-5 bg-white rounded-lg shadow-sm border {% if goal.is_overdue %}border-red-300 bg-red-50{% else %}border-gray-200{% endif %}"
-                     data-testid="goal-card">
+            {#
+                The card is an `<a>` rather than an `<article>` with a click
+                handler. Two reasons, and the second is the one that matters:
+
+                * it works with JavaScript off, and it is a real link, so it can
+                  be opened in a new tab, copied, and seen by a screen reader as
+                  a link rather than as an unnamed region;
+                * an `@click` handler would have to live inside the page's single
+                  root scope and would need the id interpolated into the
+                  `x-data` expression to build its URL -- user text in a
+                  JavaScript expression is exactly what
+                  `tests/integration/web/test_security.py` refuses. A plain href
+                  has no version of that problem.
+
+                The status badge inside is a `<span>`, not a nested control, so
+                the whole card is one link and not a link inside a link.
+            #}
+            <a data-testid="goal-card"
+               href="{{ url_for('tasks.goal_detail', goal_id=goal.id) }}"
+               class="flex flex-col p-5 bg-white rounded-lg shadow-sm border {% if goal.is_overdue %}border-red-300 bg-red-50{% else %}border-gray-200{% endif %} hover:shadow-md hover:border-purple-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500">
                 <div class="flex items-start justify-between gap-2">
                     <h2 class="font-semibold text-gray-900">{{ goal.name }}</h2>
                     <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full {{ goal.status_style }}">
@@ -85,7 +107,15 @@
                     </div>
                     {% endif %}
                 </dl>
-            </article>
+
+                {# A "View tasks" line, because a card that is entirely a link
+                   does not advertise that it leads anywhere. It names the
+                   destination rather than saying "more", for the same reason the
+                   button on the daily page spells out what it does. #}
+                <p class="mt-3 text-xs font-medium text-purple-700">
+                    View tasks &amp; progress &rarr;
+                </p>
+            </a>
             {% endfor %}
         </div>
     {% endif %}
