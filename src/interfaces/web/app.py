@@ -43,6 +43,13 @@ from src.profile.application.use_cases import (
 )
 from src.profile.infrastructure.repository import DRFProfileRepository
 from src.profile.interfaces.blueprint import profile_bp
+from src.purchases.application.wiring import build_purchases_use_cases
+from src.purchases.infrastructure.repositories import (
+    DRFShoppingListRepository,
+    DRFTagRepository,
+    DRFWishlistRepository,
+)
+from src.purchases.interfaces.blueprints import purchases_bp
 from src.rentals.application.wiring import build_rentals_use_cases
 from src.rentals.infrastructure.drf_client import DrfRentalsClient
 from src.rentals.infrastructure.nextcloud_webdav import (
@@ -95,6 +102,7 @@ def create_app() -> Flask:
             ("identity", "templates"),
             ("rentals", "web/templates"),
             ("tasks", "templates"),
+            ("purchases", "templates"),
         )
     ]
     app.jinja_loader = FileSystemLoader(
@@ -118,6 +126,12 @@ def create_app() -> Flask:
     user_repo = DRFUserRepository(api_client)
     rentals_client = DrfRentalsClient(api_client)
     tasks_client = DrfTasksClient(api_client)
+    # Three adapters, because the purchases context declares three ports and the
+    # backend routes them differently: a shopping-list item is addressed *under*
+    # a list, a wishlist item by id alone, and the tag catalogue is shared.
+    purchases_shopping_lists = DRFShoppingListRepository(api_client)
+    purchases_wishlist = DRFWishlistRepository(api_client)
+    purchases_tags = DRFTagRepository(api_client)
 
     # Nextcloud upload path served on THIS app's origin by the reverse proxy.
     #
@@ -207,6 +221,12 @@ def create_app() -> Flask:
     # Tasks goes through the same proxy, for the same reason and under the same
     # positional-token contract its port documents.
     safe_tasks_client = refreshing(tasks_client)
+    # Purchases goes through the same proxy, for the same reason and under the
+    # same positional-token contract its ports document: a 401 from any of the
+    # three adapters refreshes and retries once instead of logging the user out.
+    safe_purchases_shopping_lists = refreshing(purchases_shopping_lists)
+    safe_purchases_wishlist = refreshing(purchases_wishlist)
+    safe_purchases_tags = refreshing(purchases_tags)
 
     app.auth_use_case = AuthenticateUserUseCase(auth_repository=auth_repo)
     app.logout_use_case = LogoutUserUseCase(auth_repository=auth_repo)
@@ -255,6 +275,14 @@ def create_app() -> Flask:
     app.config.setdefault("TASKS_OVERWHELM_THRESHOLD", "4.0")
     app.config.setdefault("TASKS_MAX_DAILY_HOURS", "8.0")
     build_tasks_use_cases(safe_tasks_client, clock=app.clock).attach_to(app)
+
+    # Purchases use cases, built in their own composition root so no view ever
+    # assembles one.
+    build_purchases_use_cases(
+        safe_purchases_shopping_lists,
+        safe_purchases_wishlist,
+        safe_purchases_tags,
+    ).attach_to(app)
 
     # Registered first on purpose. Flask runs `after_request` hooks in reverse
     # registration order, so this one executes last -- after the cookie hook
@@ -356,6 +384,7 @@ def create_app() -> Flask:
     app.register_blueprint(users_bp)
     app.register_blueprint(rentals_bp)
     app.register_blueprint(tasks_bp)
+    app.register_blueprint(purchases_bp)
 
     # LOCAL DEV ONLY -- the rule-6 upload fallback, registered as its own
     # blueprint and only when its flag is set. Removing this block (and the
