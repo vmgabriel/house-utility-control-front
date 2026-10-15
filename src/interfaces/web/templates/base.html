@@ -84,6 +84,12 @@
                         <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
                         <a href="{{ url_for('rentals.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Rentals</a>
                         <a href="{{ url_for('tasks.backlog') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Tasks</a>
+                        {# The shopping-lists overview, which is the context's
+                           landing page. The wishlist is one click from it, so a
+                           second nav link pointing straight at the wishlist would
+                           be redundant -- the same reasoning as "Transactions"
+                           above naming the dashboard rather than the list. #}
+                        <a href="{{ url_for('purchases.lists') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Purchases</a>
 
                         {# The LLM health dot: a layout-owned Alpine scope, like the
                            account menu below. See `_llm_health.html`. Hidden below
