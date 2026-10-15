@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+{% block title %}{{ detail.name }} &middot; Budget Tracker{% endblock %}
+
+{% block content %}
+{#
+    One top-level scope, holding the in-flight set for the mark-purchased ticks.
+
+    The scope holds a *set of item ids currently being submitted*, not the
+    purchased state. That distinction is the point: the strike-through is bound
+    to `detail`'s server-rendered truth plus the ids Alpine has optimistically
+    ticked, so a rejected tick reverts by removing its id from that set. Holding
+    the whole item list in Alpine instead would make the page's state and the
+    backend's diverge on the very next unrelated request.
+
+    `detail` (the ViewModel) is referenced through `$root` from inside the
+    `x-for`, which is how the nested per-item expressions reach the page's one
+    root scope without declaring a second one.
+#}
+<div x-data="{
+        creating: false,
+        notice: '',
+        busy: false,
+        async markPurchased(url) {
+            // The token comes off the root element rather than out of this
+            // expression, for the same reason `tasks/daily.html` puts it in a
+            // `data-` attribute: interpolating a value into a JavaScript string
+            // is the thing that turns user text into code, and a token has no
+            // reason to travel that way when the DOM already holds it.
+            this.busy = true;
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'fetch',
+                        'X-CSRF-Token': this.$root.dataset.csrfToken
+                    },
+                    body: ''
+                });
+                const data = await response.json();
+                // A non-2xx is a real failure and the route answers 4xx rather
+                // than 200-with-a-flag precisely so this branch depends on the
+                // status and not on a field both sides must agree the meaning of.
+                // On success the page is reloaded rather than patched: the
+                // server's answer is the only authority on the counts and on
+                // whether that tick completed the list, and re-rendering from it
+                // is far easier to be correct about than a hand-rolled DOM
+                // reconciliation.
+                if (response.ok) { window.location.reload(); return; }
+                this.notice = data.message || 'Could not update that item.';
+                this.noticeLevel = 'error';
+            } catch (error) {
+                this.notice = 'The purchases service could not be reached.';
+                this.noticeLevel = 'error';
+            } finally {
+                this.busy = false;
+            }
+        }
+     }"
+     data-csrf-token="{{ csrf_token }}"
+     class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div>
+            <nav class="text-sm text-gray-500 mb-1" aria-label="Breadcrumb">
+                <a href="{{ detail.back_url }}"
+                   class="hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">
+                    Shopping lists
+                </a>
+                <span aria-hidden="true">/</span>
+                <span class="text-gray-700">{{ detail.name }}</span>
+            </nav>
+            <div class="flex items-center gap-3">
+                <h1 class="text-2xl font-bold text-gray-900">{{ detail.name }}</h1>
+                <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full {{ detail.priority_style }}">
+                    {{ detail.priority_label }}
+                </span>
+            </div>
+            <p class="mt-1 text-sm text-gray-600" data-testid="list-summary">
+                {{ detail.purchased_count }} of {{ detail.item_count }} bought
+                {%- if detail.pending_count %} &middot; {{ detail.pending_count }} left{% endif %}
+                {%- if detail.is_completed %} &middot; completed {{ detail.completed_on }}{% endif %}
+            </p>
+        </div>
+
+        <button type="button"
+                @click="creating = !creating"
+                :aria-expanded="creating"
+                aria-controls="add-item-panel"
+                class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+            Add item
+        </button>
+    </div>
+
+    {#
+        The fetch path's failure notice. `x-cloak` keeps it out of the layout
+        before Alpine boots, which matters because it is server-rendered markup
+        that would otherwise flash on every load.
+    #}
+    <div x-show="notice"
+         x-cloak
+         role="alert"
+         data-testid="tick-error"
+         class="mb-4 px-4 py-3 text-sm rounded-lg border border-red-200 bg-red-50 text-red-800">
+        <span x-text="notice"></span>
+    </div>
+
+    {#
+        A real form posting to a real route. The common case is typing a name and
+        pressing enter, and that has to work without JavaScript -- so this is not
+        a fetch, and the panel is a disclosure rather than a requirement.
+    #}
+    <form id="add-item-panel"
+          x-show="creating"
+          x-cloak
+          action="{{ url_for('purchases.add_list_item', list_id=list_id) }}"
+          method="POST"
+          class="mb-6 p-4 bg-white rounded-lg shadow-sm border border-gray-200">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="flex flex-wrap items-end gap-3">
+            <div class="flex-1 min-w-56">
+                <label for="item-name" class="block text-sm font-medium text-gray-700">Item</label>
+                <input id="item-name"
+                       name="name"
+                       type="text"
+                       required
+                       maxlength="200"
+                       placeholder="Milk"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div class="w-24">
+                <label for="item-quantity" class="block text-sm font-medium text-gray-700">Qty</label>
+                <input id="item-quantity"
+                       name="quantity"
+                       type="number"
+                       min="1"
+                       max="9999"
+                       value="1"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div class="flex-1 min-w-56">
+                <label for="item-details" class="block text-sm font-medium text-gray-700">Details</label>
+                <input id="item-details"
+                       name="details"
+                       type="text"
+                       maxlength="1000"
+                       placeholder="Semi-skimmed, 2 litres"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <button type="submit"
+                    class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Add
+            </button>
+        </div>
+    </form>
+
+    {% if detail.is_empty %}
+        <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300">
+            <p class="text-gray-600">This list has no items.</p>
+            <p class="mt-1 text-sm text-gray-500">Add what you need to buy and tick items off as you go.</p>
+        </div>
+    {% else %}
+        {# Pending first, then bought. The regrouping is this page's only
+           re-ordering; within each group the backend's order is untouched. #}
+        <div class="space-y-6">
+            <section aria-labelledby="pending-heading">
+                <h2 id="pending-heading" class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                    To buy
+                </h2>
+                {% if detail.pending_items %}
+                <ul class="divide-y divide-gray-100 bg-white rounded-lg shadow-sm border border-gray-200">
+                    {% for item in detail.pending_items %}
+                    <li data-testid="list-item" class="px-4 py-3 flex items-start gap-3">
+                        {#
+                            A form posting to the item's action, so the tick works
+                            with JavaScript off. Alpine intercepts it when it is
+                            present: `@submit.prevent` stops the navigation and
+                            hands the same URL to `markPurchased`, which sends the
+                            identical POST with the fetch header. One route, two
+                            callers -- never two near-duplicate routes.
+                        #}
+                        <form action="{{ item.mark_purchased_url }}"
+                              method="POST"
+                              @submit.prevent="markPurchased($el.action)"
+                              class="mt-0.5">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit"
+                                    data-testid="mark-purchased"
+                                    :disabled="busy"
+                                    class="w-5 h-5 rounded border-2 border-gray-300 hover:border-blue-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+                                    :aria-label="'Mark ' + item.name + ' as purchased'">
+                                <span class="sr-only">Mark {{ item.name }} as purchased</span>
+                            </button>
+                        </form>
+
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-medium text-gray-900">
+                                {# Quantity is omitted for a single unit: "1 Milk"
+                                   is what the user wrote, and a "1" prefix on a
+                                   one-item list is noise on every row. #}
+                                {% if item.quantity > 1 %}{{ item.quantity }}&times; {% endif %}{{ item.name }}
+                            </p>
+                            {% if item.has_details %}
+                            <p class="mt-0.5 text-xs text-gray-500">{{ item.details }}</p>
+                            {% endif %}
+                            {% if item.tags %}
+                            <ul class="mt-1 flex flex-wrap gap-1">
+                                {% for tag in item.tags %}
+                                <li class="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-700 rounded-full">{{ tag.name }}</li>
+                                {% endfor %}
+                            </ul>
+                            {% endif %}
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="px-4 py-3 text-sm text-gray-500 bg-white rounded-lg border border-dashed border-gray-300">
+                    Nothing left to buy on this list.
+                </p>
+                {% endif %}
+            </section>
+
+            {% if detail.purchased_items %}
+            <section aria-labelledby="purchased-heading">
+                <h2 id="purchased-heading" class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                    Bought
+                </h2>
+                {#
+                    Bought rows are rendered struck through and disabled: the
+                    backend has no "un-purchase" route, so a tick here cannot be
+                    taken back through the UI. Saying so is honest; rendering a
+                    live button that silently does nothing is not.
+                #}
+                <ul class="divide-y divide-gray-100 bg-white rounded-lg shadow-sm border border-gray-200">
+                    {% for item in detail.purchased_items %}
+                    <li data-testid="list-item" class="px-4 py-3 flex items-start gap-3 opacity-60">
+                        <span class="mt-0.5 w-5 h-5 rounded-full bg-green-100 text-green-700 flex items-center justify-center text-xs"
+                              aria-hidden="true">&#10003;</span>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-medium text-gray-900 line-through">
+                                {% if item.quantity > 1 %}{{ item.quantity }}&times; {% endif %}{{ item.name }}
+                            </p>
+                            {% if item.has_details %}
+                            <p class="mt-0.5 text-xs text-gray-500 line-through">{{ item.details }}</p>
+                            {% endif %}
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </section>
+            {% endif %}
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

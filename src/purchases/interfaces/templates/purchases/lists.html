@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Shopping lists &middot; Budget Tracker{% endblock %}
+
+{% block content %}
+{#
+    One top-level Alpine scope, and it owns the create-list disclosure.
+
+    The lists themselves are plain links -- cards the user clicks through to --
+    so nothing on this page needs state per card. A card-level `x-data` would
+    open a second root inside a single page body, which is the failure
+    AGENTS.md's Alpine rule is written against, and it would scale with the
+    number of lists rather than staying a single mistake.
+#}
+<div x-data="{ creating: false }" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Shopping lists</h1>
+            <p class="mt-1 text-sm text-gray-600">
+                {# The count is the number of ITEMS across the active lists, not
+                   the number of lists -- it is the only figure on this page the
+                   user can act on ("do I have to go to the shop?"). #}
+                {{ lists.active_total }} item{{ '' if lists.active_total == 1 else 's' }}
+                across {{ lists.cards|length }} active list{{ '' if lists.cards|length == 1 else 's' }}
+            </p>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <a href="{{ url_for('purchases.wishlist') }}"
+               class="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Wishlist
+            </a>
+            <button type="button"
+                    @click="creating = !creating"
+                    :aria-expanded="creating"
+                    aria-controls="create-list-panel"
+                    class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                New list
+            </button>
+        </div>
+    </div>
+
+    {# The create form is a real `<form>` posting to a real route, so it works
+       with JavaScript off: the panel is a disclosure, not a requirement. #}
+    <form id="create-list-panel"
+          x-show="creating"
+          x-cloak
+          action="{{ url_for('purchases.create_list') }}"
+          method="POST"
+          class="mb-6 p-4 bg-white rounded-lg shadow-sm border border-gray-200">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="flex flex-wrap items-end gap-3">
+            <div class="flex-1 min-w-56">
+                <label for="list-name" class="block text-sm font-medium text-gray-700">List name</label>
+                <input id="list-name"
+                       name="name"
+                       type="text"
+                       required
+                       maxlength="200"
+                       placeholder="Weekly groceries"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div>
+                <label for="list-priority" class="block text-sm font-medium text-gray-700">Priority</label>
+                <select id="list-priority"
+                        name="priority"
+                        class="mt-1 block px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    {% for value, label in lists.priorities %}
+                    <option value="{{ value }}">{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit"
+                    class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Create
+            </button>
+        </div>
+    </form>
+
+    {% if lists.is_empty %}
+        <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300">
+            <p class="text-gray-600">No active shopping lists.</p>
+            <p class="mt-1 text-sm text-gray-500">
+                A list groups what you still need to buy. Create one above to get started.
+            </p>
+        </div>
+    {% else %}
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {% for card in lists.cards %}
+            {#
+                The card is an `<a>`: it works with JavaScript off, it is a real
+                link that can be opened in a new tab, and a screen reader
+                announces it as a link. An `@click` handler would have to be
+                interpolated with the id inside the page's root scope, which puts
+                server data into a JavaScript expression -- something
+                `tests/integration/web/test_security.py` rightly refuses.
+
+                The badge inside is a `<span>`, so the whole card is one link and
+                not a link nested in a link.
+            #}
+            <a data-testid="shopping-list-card"
+               href="{{ card.detail_url }}"
+               class="flex flex-col p-5 bg-white rounded-lg shadow-sm border border-gray-200 hover:shadow-md hover:border-blue-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                <div class="flex items-start justify-between gap-2">
+                    <h2 class="font-semibold text-gray-900">{{ card.name }}</h2>
+                    <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full shrink-0 {{ card.priority_style }}">
+                        {{ card.priority_label }}
+                    </span>
+                </div>
+
+                <dl class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+                    <div class="flex items-center gap-1">
+                        <dt>Items</dt>
+                        <dd>{{ card.item_count }}</dd>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <dt>Left</dt>
+                        <dd data-testid="card-pending-count">{{ card.pending_count }}</dd>
+                    </div>
+                    {% if card.is_completed %}
+                    <div class="flex items-center gap-1 text-green-700">
+                        <dt>Completed</dt>
+                        <dd>{{ card.completed_on }}</dd>
+                    </div>
+                    {% endif %}
+                </dl>
+
+                {% if card.item_count %}
+                {#
+                    `progress_percent` is computed in the ViewModel from the same
+                    item list the detail page renders, so the bar and the counts
+                    beside it are two views of one number rather than two
+                    computations.
+                #}
+                <div class="mt-3 w-full h-2 bg-gray-100 rounded-full overflow-hidden"
+                     role="progressbar"
+                     aria-valuenow="{{ card.progress_percent }}"
+                     aria-valuemin="0"
+                     aria-valuemax="100"
+                     aria-label="{{ card.name }} progress">
+                    <div class="h-full bg-blue-600 rounded-full" style="width: {{ card.progress_percent }}%"></div>
+                </div>
+                {% endif %}
+
+                <p class="mt-3 text-xs font-medium text-blue-700">
+                    {% if card.is_completed %}
+                    Everything on this list is bought &rarr;
+                    {% else %}
+                    View checklist &rarr;
+                    {% endif %}
+                </p>
+            </a>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    {#
+        The archived lists are a `<details>` block rather than a second grid: a
+        soft-deleted list is something the user comes back for deliberately, and
+        rendering it at the same weight as an active list would suggest the two
+        are equally worth acting on. They are not -- one is done with.
+    #}
+    <div class="mt-8">
+        <details class="p-4 bg-white rounded-lg shadow-sm border border-gray-200">
+            <summary class="cursor-pointer text-sm font-medium text-gray-700 select-none">
+                Archived lists
+                {% if archived_unavailable %}
+                <span class="text-gray-400">(unavailable right now)</span>
+                {% elif not lists.is_archived_empty %}
+                <span class="text-gray-500">({{ lists.archived|length }})</span>
+                {% endif %}
+            </summary>
+
+            {% if archived_unavailable %}
+                <p class="mt-3 text-sm text-gray-500">
+                    The archived lists could not be loaded. Try again in a moment.
+                </p>
+            {% elif lists.is_archived_empty %}
+                <p class="mt-3 text-sm text-gray-500">
+                    Nothing archived. Deleting a list keeps it and its items, and it lands here.
+                </p>
+            {% else %}
+                <ul class="mt-3 divide-y divide-gray-100">
+                    {% for card in lists.archived %}
+                    <li class="py-2 flex items-center justify-between gap-3">
+                        <a href="{{ card.detail_url }}"
+                           class="text-sm font-medium text-gray-800 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">
+                            {{ card.name }}
+                        </a>
+                        <span class="text-xs text-gray-500">
+                            {{ card.item_count }} item{{ '' if card.item_count == 1 else 's' }}
+                        </span>
+                    </li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        </details>
+    </div>
+</div>
+{% endblock %}

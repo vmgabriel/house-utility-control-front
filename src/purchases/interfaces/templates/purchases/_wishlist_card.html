@@ -1,0 +1,101 @@
+{#
+    One wishlist card.
+
+    Included by `wishlist.html` from inside that page's single `x-data` root, and
+    it declares no scope of its own -- which is the whole point of keeping it a
+    partial rather than a second root per card. Every expression it uses
+    (`markPurchased`, `inFlight`) resolves against the enclosing page scope.
+
+    Bought cards are rendered by this same partial with the same markup: the
+    difference is driven entirely by `item.is_purchased`, which the ViewModel
+    already carries. A separate "bought card" partial would be a second copy of
+    every rule about a card -- the image fallback, the price, the badge -- free to
+    drift from the first.
+
+    The image is rendered with `loading="lazy"` because a wishlist page can hold
+    dozens of remote product photos and none of them is above the fold by
+    default.
+#}
+<article data-testid="wishlist-card"
+         class="flex flex-col overflow-hidden bg-white rounded-lg shadow-sm border border-gray-200 {{ item.card_style }}">
+
+    <div class="relative aspect-video bg-gray-100 flex items-center justify-center">
+        {% if item.has_image %}
+        <img src="{{ item.image_link }}"
+             alt=""
+             loading="lazy"
+             class="w-full h-full object-cover">
+        {% else %}
+        {# No `image_link` is the common case, not a failure: the API's field is
+           nullable and most wishlist items will not have a photo. #}
+        <span class="text-3xl" aria-hidden="true">&#128717;</span>
+        {% endif %}
+
+        <span class="absolute top-2 left-2 inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full {{ item.priority_style }}"
+              data-testid="priority-badge">
+            {{ item.priority_label }}
+        </span>
+    </div>
+
+    <div class="flex flex-1 flex-col p-4">
+        <h3 class="font-semibold text-gray-900">
+            {# The card title is the link when there is one. `link` is already
+               http(s)-validated by the domain, so it cannot carry a
+               `javascript:` URL into this `href`. #}
+            {% if item.link %}
+            <a href="{{ item.link }}"
+               rel="noopener noreferrer nofollow"
+               target="_blank"
+               class="hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">
+                {{ item.name }}
+            </a>
+            {% else %}
+            {{ item.name }}
+            {% endif %}
+        </h3>
+
+        {% if item.has_description %}
+        <p class="mt-1 text-sm text-gray-600">{{ item.description }}</p>
+        {% endif %}
+
+        <div class="mt-3 flex items-center justify-between gap-2">
+            {# The price is already formatted in the user's own currency by the
+               ViewModel. An absent estimate renders as a dash, never as 0.00 --
+               "not estimated" and "estimated at nothing" are different claims. #}
+            <span class="text-sm font-medium text-gray-900"
+                  data-testid="estimated-price">{{ item.estimated_price_label }}</span>
+
+            {% if item.is_purchased %}
+            <span class="inline-flex items-center gap-1 text-xs font-medium text-green-700">
+                <span aria-hidden="true">&#10003;</span> Bought
+            </span>
+            {% else %}
+            {#
+                A real form to a real route, so the tick works without
+                JavaScript. Alpine intercepts the submit when it is available and
+                sends the identical POST with the fetch header -- one route, two
+                callers, never two near-duplicate routes.
+            #}
+            <form action="{{ item.mark_purchased_url }}"
+                  method="POST"
+                  @submit.prevent="markPurchased($el.action)">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit"
+                        data-testid="mark-purchased"
+                        :disabled="busy"
+                        class="px-2 py-1 text-xs font-medium text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">
+                    Mark bought
+                </button>
+            </form>
+            {% endif %}
+        </div>
+
+        {% if item.tags %}
+        <ul class="mt-3 flex flex-wrap gap-1">
+            {% for tag in item.tags %}
+            <li class="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-700 rounded-full">{{ tag.name }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+</article>
