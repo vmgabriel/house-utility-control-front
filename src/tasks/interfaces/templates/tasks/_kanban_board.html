@@ -1,0 +1,141 @@
+{#
+    The daily board's Alpine component, registered globally.
+
+    Lives in `base.html` because `Alpine.data` has to run before Alpine
+    initialises, and the only script that reliably does is one the parser has
+    already reached before boot -- the same arrangement as `_markdown.html`.
+
+    Loaded on every page rather than only the board's, for the same reason
+    SortableJS is: the registration is a few hundred bytes and the ordering
+    problem is not worth a page that only works if the library happens to have
+    arrived first. It costs nothing on a page with no board -- `Alpine.data`
+    only defines a factory that nothing calls.
+#}
+<script>
+    // Kanban board component for the daily plan page
+    // Registered globally so it can be used with x-data="kanbanBoard"
+    // Register via alpine:init event which fires when Alpine initializes.
+    function registerKanbanBoard() {
+        if (typeof Alpine !== 'undefined' && Alpine.data) {
+            Alpine.data('kanbanBoard', () => ({
+                csrfToken: '',
+                generating: false,
+                moveBase: '',
+                moving: {},
+                message: '',
+                messageOk: true,
+                init() {
+                    this.csrfToken = this.$el.dataset.csrfToken;
+                    this.moveBase = this.$el.dataset.moveBase;
+                    const _self = this;
+                    if (typeof window.Sortable !== 'function') return;
+                    this.$root.querySelectorAll('[data-kanban-list]').forEach((list) => {
+                        window.Sortable.create(list, {
+                            group: 'kanban',
+                            draggable: '[data-board-card]',
+                            animation: 150,
+                            forceFallback: true,
+                            sort: false,
+                            filter: 'select,button,a,input',
+                            emptyInsertThreshold: 0.5,
+                            onMove(event) {
+                                const accepted = (
+                                    event.to.dataset.acceptedSources || ''
+                                ).split(',').filter(Boolean);
+                                return accepted.includes(
+                                    event.dragged.dataset.status
+                                );
+                            },
+                            onEnd: (event) => _self.onDrop(event)
+                        });
+                    });
+                },
+                async onDrop(event) {
+                    const card = event.item;
+                    const target = event.to.dataset.status;
+                    if (event.from === event.to) return;
+                    const taskId = card.dataset.taskId;
+                    if (this.moving[taskId]) return;
+                    const origin = event.from;
+                    const next = origin.children[event.oldIndex] || null;
+                    this.moving[taskId] = true;
+                    this.message = '';
+                    try {
+                        const response = await fetch(
+                            this.moveBase.replace('__TASK_ID__', taskId),
+                            {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: {
+                                    'X-Requested-With': 'fetch',
+                                    'X-CSRF-Token': this.csrfToken
+                                },
+                                body: new URLSearchParams({ status: target })
+                            }
+                        );
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || data.ok === false) {
+                            card.removeAttribute('data-status');
+                            card.dataset.status = origin.dataset.status;
+                            origin.insertBefore(card, next);
+                            this.message = data.message || 'Could not move that task.';
+                            this.messageOk = false;
+                        } else {
+                            card.dataset.status = data.status || target;
+                            const stamp = card.querySelector(
+                                '[data-testid="kanban-card-completed-at"]'
+                            );
+                            if (data.completed_at) {
+                                // Create the node when the card was not
+                                // *rendered* finished. It only exists at render
+                                // time for a card that started in Done, so a card
+                                // dragged into Done has none to update -- and
+                                // that is the case the stamp matters in.
+                                let node = stamp;
+                                if (!node) {
+                                    node = document.createElement('p');
+                                    node.className = 'mt-1 text-xs text-green-700';
+                                    node.dataset.testid = 'kanban-card-completed-at';
+                                    node.append('Completed ');
+                                    node.appendChild(document.createElement('time'));
+                                    // Above the move control's divider, where a
+                                    // server-rendered card puts it.
+                                    const form = card.querySelector('form');
+                                    const anchor = form ? form.parentElement : null;
+                                    card.insertBefore(node, anchor);
+                                }
+                                const when = node.querySelector('time');
+                                when.dateTime = data.completed_at;
+                                when.textContent = data.completed_at;
+                            } else if (stamp) {
+                                // Moved back out of Done: the backend cleared
+                                // `completed_at`, so keeping the stamp would
+                                // claim a completion that did not happen.
+                                stamp.remove();
+                            }
+                            this.message = data.message || '';
+                            this.messageOk = true;
+                            if (!this.message) this.message = '';
+                        }
+                    } catch (error) {
+                        card.removeAttribute('data-status');
+                        card.dataset.status = origin.dataset.status;
+                        origin.insertBefore(card, next);
+                        this.message = 'Could not reach the server.';
+                        this.messageOk = false;
+                    } finally {
+                        this.moving[taskId] = false;
+                    }
+                }
+            }));
+        }
+    }
+    // Register immediately if Alpine is already available
+    if (typeof Alpine !== 'undefined' && Alpine.data) {
+        registerKanbanBoard();
+    }
+    // Always listen for alpine:init as the primary registration mechanism
+    document.addEventListener('alpine:init', () => {
+        registerKanbanBoard();
+    });
+</script>

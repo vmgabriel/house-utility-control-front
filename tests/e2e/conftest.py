@@ -48,13 +48,21 @@ ALPINE_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/alpinejs")
 TAILWIND_CDN = re.compile(r"^https://cdn\.tailwindcss\.com")
 MARKED_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/marked@")
 DOMPURIFY_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/dompurify@")
+SORTABLE_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/sortablejs@")
 
 #: Third-party scripts vendored under `tests/e2e/vendor/`, matched to the CDN
 #: URL they stand in for. Adding a vendored asset is a two-line change here:
 #: download it into `vendor/`, add a pattern and an entry below.
+#:
+#: ``SortableJS`` is vendored for a stronger reason than hermeticity. The E2E
+#: suite drives real drags, and a stubbed-out ``window.Sortable`` would make
+#: every drag assertion fail with "Sortable is not a function" -- or, worse,
+#: pass if the page fell back to its form controls. Serving the real library is
+#: what makes a drag test prove anything about drag.
 VENDOR_ASSETS = {
     MARKED_CDN: "marked.min.js",
     DOMPURIFY_CDN: "purify.min.js",
+    SORTABLE_CDN: "sortable.min.js",
 }
 
 #: A browser-side call to the API would mean the BFF contract was bypassed.

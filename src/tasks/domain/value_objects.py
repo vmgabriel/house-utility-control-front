@@ -295,6 +295,64 @@ _PRIORITY_IMPORTANCE: dict[Priority, Importance] = {}  # noqa: F821
 
 
 @dataclass(frozen=True, slots=True)
+class TaskTransition:
+    """One of the three ways a task's status can be changed.
+
+    Named after the *operation*, not after the HTTP verb that carries it,
+    because the operation is the domain's vocabulary and the route is the
+    adapter's. Three of them exist and no more:
+
+    ``START``
+        Move to ``doing``. The backend calls this ``mark_as_doing``.
+    ``COMPLETE``
+        Move to ``done``, stamping ``completed_at``. ``mark_as_done``.
+    ``REOPEN``
+        Move back to ``todo``, clearing ``completed_at``. ``reopen``.
+
+    **There is deliberately no "move back to doing" and no "unstick from
+    doing".** The backend has exactly three status-changing endpoints and each
+    one is a *named decision* rather than a generic assignment:
+
+    * ``mark_as_doing`` refuses with 409 ``TaskAlreadyDone`` on a finished task,
+      so ``done -> doing`` cannot be expressed at all.
+    * ``reopen`` refuses with 409 ``TaskNotCompleted`` unless the task is
+      finished, so ``doing -> todo`` cannot be expressed either.
+
+    A fourth transition would have to be invented to fill the gap, and inventing
+    one is worse than the gap: the board would offer a move that the backend
+    then rejects, and the user would learn to distrust the board. See
+    :meth:`Task.can_transition_to`, which is where that absence is decided, and
+    `MoveTaskUseCase`, which is where the backend's refusal is surfaced.
+    """
+
+    name: str
+    #: The status the transition lands the task in.
+    target: TaskStatus
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise InvalidTaskError("Task transition name must be a non-empty string.")
+        if not isinstance(self.target, TaskStatus):
+            raise InvalidTaskError("Task transition target must be a TaskStatus.")
+
+    def __str__(self) -> str:
+        return self.name
+
+
+#: The three transitions, keyed by the status each one produces.
+#:
+#: Keyed on the *target* because that is how the caller thinks about it -- a drag
+#: says "put this in Doing", not "apply transition N" -- and because it is
+#: unambiguous: each of these three statuses has exactly one endpoint in the
+#: backend that produces it, so "move to X" names the operation on its own.
+TASK_TRANSITIONS: dict[TaskStatus, TaskTransition] = {
+    TaskStatus.DOING: TaskTransition(name="start", target=TaskStatus.DOING),
+    TaskStatus.DONE: TaskTransition(name="complete", target=TaskStatus.DONE),
+    TaskStatus.TODO: TaskTransition(name="reopen", target=TaskStatus.TODO),
+}
+
+
+@dataclass(frozen=True, slots=True)
 class Importance:
     """A 1-5 importance score.
 
@@ -576,6 +634,7 @@ __all__ = [
     "MAX_IMPORTANCE",
     "MAX_NAME_LENGTH",
     "MIN_IMPORTANCE",
+    "TASK_TRANSITIONS",
     "UNSET",
     "DailyPlanId",
     "Duration",
@@ -587,6 +646,7 @@ __all__ = [
     "TaskEdits",
     "TaskId",
     "TaskStatus",
+    "TaskTransition",
     "Unset",
     "UnsetOr",
     "UserId",

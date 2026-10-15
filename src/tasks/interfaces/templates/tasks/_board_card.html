@@ -1,0 +1,102 @@
+{#
+    One card on the daily board.
+
+    Included from `daily.html` inside its column's drop list, so `task` and the
+    column's `column` are already in scope. It is an include rather than a macro because a partial gets the same
+    escaping guarantees as any other template body: the task name here is
+    escaped by Jinja exactly as it is everywhere else. Rendering a macro's
+    output as elements instead would mean marking it trusted, and that is the
+    one trade this codebase does not make for user-supplied text.
+
+    **No `x-data` here.** The board has one root scope and every card's
+    interactivity is delegated from it through SortableJS's own event handlers.
+    A per-card scope would be a second root inside the page body, which is the
+    failure AGENTS.md rule 5 exists to prevent -- and there are a variable number
+    of cards, so it would scale with the number too.
+
+    `data-status` on the card is what `onMove` reads to decide whether a drop is
+    legal: the question "may this card go there" is answered by the destination
+    column's `data-allowed-targets`, compared against the card's current status.
+    Both come from `Task.can_transition_to`, so the drag rule and the select
+    below it cannot disagree about what is possible.
+#}
+<article class="p-3 bg-white rounded-lg shadow-sm border border-gray-200 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow"
+         role="listitem"
+         data-board-card
+         data-task-id="{{ task.id }}"
+         data-status="{{ task.status_value }}"
+         data-testid="kanban-card">
+    <div class="flex items-start justify-between gap-2">
+        <h3 class="text-sm font-medium text-gray-900 {% if task.is_done %}line-through text-gray-400{% endif %}">
+            {{ task.name }}
+        </h3>
+        {% if task.is_overwhelmed %}
+        <span class="inline-flex items-center px-1.5 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800 shrink-0"
+              title="More hours than the threshold for a single task">
+            &#9888;&#65039;
+        </span>
+        {% endif %}
+    </div>
+
+    <p class="mt-1 text-xs text-gray-500">
+        {{ task.estimated_hours_label }}
+        {%- if task.estimated_hours_label == '—' %} not estimated{% endif %}
+        {%- if task.due_date %} &middot; due <time datetime="{{ task.due_date }}">{{ task.due_date }}</time>{% endif %}
+    </p>
+
+    {# Completion time, when there is one. The server-set fact, rendered on the
+       card rather than in a tooltip: on a board, *when* something was finished
+       is usually the reason it is still in front of you. #}
+    {% if task.completed_at %}
+    <p class="mt-1 text-xs text-green-700"
+       data-testid="kanban-card-completed-at">
+        Completed <time datetime="{{ task.completed_at }}">{{ task.completed_at }}</time>
+    </p>
+    {% endif %}
+
+    {#
+        The move control.
+
+        This is a real `<form>` posting to the same route the drag handler calls,
+        and that is the point rather than a fallback: it is the *baseline*. A
+        board is unusable with a pointer alone -- a keyboard user cannot drag,
+        and a screen reader announces nothing about a draggable -- so the
+        non-pointer path is present for everyone, not hidden behind `<noscript>`.
+
+        The `_method`-free single POST means it works with JavaScript off, and
+        the drag handler is the enhancement layered on top. Both go through the
+        one route, so there is one CSRF check and one set of error messages
+        rather than two implementations that can drift.
+
+        There is deliberately no "this card cannot be moved" branch. Every one of
+        the three statuses has at least one legal destination -- `todo` to Doing
+        or Done, `doing` to Done, `done` to To Do -- so the option list is never
+        empty. A guard for the empty case would be a branch nothing can reach,
+        and a select with no options is a worse thing to render than one with a
+        single option.
+    #}
+    <div class="mt-2 pt-2 border-t border-gray-100">
+        <form method="POST" action="{{ url_for('tasks.move_task', task_id=task.id) }}"
+              class="flex items-center gap-1">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="sr-only" for="move-{{ task.id }}">Move {{ task.name }}</label>
+            <select id="move-{{ task.id }}"
+                    name="status"
+                    data-testid="kanban-card-move-select"
+                    class="flex-1 min-w-0 px-1.5 py-1 text-xs border border-gray-300 rounded bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                {# The placeholder, not a default selection: the user chooses a
+                   destination deliberately rather than pressing Move on whatever
+                   the select happened to open on. Its empty value is rejected
+                   server-side, which is where that is enforced. #}
+                <option value="">Move to&hellip;</option>
+                {% for value, label in task.move_options %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit"
+                    data-testid="kanban-card-move-button"
+                    class="px-2 py-1 text-xs font-medium text-gray-700 border border-gray-300 rounded hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                Move
+            </button>
+        </form>
+</article>

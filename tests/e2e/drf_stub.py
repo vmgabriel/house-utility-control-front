@@ -236,6 +236,14 @@ class StubBackend:
         #: `DailyPlanFull` under their own conditions, so a test that wants
         #: either one has to be able to ask for it.
         self.add_daily_plan_task_conflict: str | None = None
+        #: Which status action should answer 409: ``"mark-doing"``,
+        #: ``"mark-done"``, or ``"reopen"``, or ``None`` for a clean success.
+        #: Set by a test that needs the board's optimistic update to be reverted.
+        self.transition_failure: str | None = None
+        #: The timestamp `mark-done` stamps onto a task. Fixed rather than
+        #: `datetime.now()` so a test can assert the exact completion time the
+        #: card renders.
+        self.stub_now: str = "2026-10-05T14:31:12.480000Z"
         #: Access tokens the stub accepts. Anything else gets a 401.
         self.valid_access_tokens: set[str] = set()
         self.overview: dict = DEFAULT_OVERVIEW
@@ -258,6 +266,7 @@ class StubBackend:
             self.daily_plans = []
             self.llm_available = True
             self.add_daily_plan_task_conflict = None
+            self.transition_failure = None
             self.valid_access_tokens = {DEFAULT_ACCESS_TOKEN, ROTATED_ACCESS_TOKEN}
             self.overview = DEFAULT_OVERVIEW
             self.user = DEFAULT_USER
@@ -465,6 +474,14 @@ class StubBackend:
         self.on_call("GET", "/tasks/tasks/", self._tasks_list_response)
         self.on_call("POST", "/tasks/tasks/", self._create_task_response)
         self.on_call("GET", "/tasks/goals/", self._goals_list_response)
+        # The three status transitions. Registered before the `/tasks/tasks/<id>/`
+        # fallback below, which would otherwise swallow all three: they share its
+        # exact shape, and a handler that ignored the action segment could not
+        # tell `mark-done` from `reopen` -- which is the whole point of testing
+        # that the board posts to the right one.
+        self.on_call("POST", "/tasks/tasks/<id>/mark-doing/", self._transition_response)
+        self.on_call("POST", "/tasks/tasks/<id>/mark-done/", self._transition_response)
+        self.on_call("POST", "/tasks/tasks/<id>/reopen/", self._transition_response)
         self.on_call("GET", "/tasks/daily-plans/", self._daily_plans_response)
         self.on_call("POST", "/tasks/daily-plans/", self._create_daily_plan_response)
         # Registered before the `<id>` fallback below, and it has to be: both
@@ -563,6 +580,54 @@ class StubBackend:
                     row[key] = value
             return StubResponse(200, row)
         return StubResponse(405, {"detail": "Method not allowed."})
+
+    #: Which of the three transitions `transition_failure` should refuse, and
+    #: with which 409. The backend raises `TaskAlreadyDone` from both
+    #: `mark-doing` and `mark-done`, and `TaskNotCompleted` from `reopen`, so a
+    #: stub that always succeeded would let a board mishandle a rejection pass.
+    TRANSITION_FAILURES = {
+        "mark-doing": (409, "A completed task cannot be moved back to doing."),
+        "mark-done": (409, "Task is already marked as done."),
+        "reopen": (409, "Only a completed task can be reopened."),
+    }
+
+    def _transition_response(self, recorded: RecordedRequest) -> StubResponse:
+        """One of `mark-doing` / `mark-done` / `reopen`.
+
+        The action is taken from the path, not from the row's current status --
+        which is the point. The stub does not re-implement the backend's rules;
+        it applies the transition it was asked for, and answers 409 only when the
+        test explicitly asked for a failure. A stub that *checked* the status
+        itself would hide exactly the bug worth catching: the board posting
+        `reopen` for a task that was never finished.
+        """
+        segments = recorded.path.rstrip("/").split("/")
+        action = segments[-1]
+        task_id = segments[-2]
+        row = next((t for t in self.tasks if t.get("id") == task_id), None)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+
+        if self.transition_failure == action:
+            code, message = self.TRANSITION_FAILURES[action]
+            return StubResponse(code, {"detail": message})
+
+        if action == "mark-doing":
+            row["status"] = "doing"
+            row["completed_at"] = None
+        elif action == "mark-done":
+            row["status"] = "done"
+            row["completed_at"] = self.stub_now
+        elif action == "reopen":
+            row["status"] = "todo"
+            row["completed_at"] = None
+        else:
+            return StubResponse(404, {"detail": f"Unstubbed action {action}."})
+
+        # `is_overwhelmed` is recomputed server-side against the day's load, and
+        # re-sending the stored value would let a stale badge pass an E2E.
+        row["is_overwhelmed"] = False
+        return StubResponse(200, row)
 
     def _goals_list_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, list(self.goals))
@@ -762,6 +827,17 @@ class StubBackend:
             if (
                 route is None
                 and path.startswith("/tasks/tasks/")
+                and path.count("/") == 5
+            ):
+                # One of the three status actions. A fallback, like the detail
+                # route below, and registered after them -- so the *literal*
+                # action segment is what decides which transition handler runs.
+                route = self._routes.get(
+                    ("POST", f"/tasks/tasks/<id>/{path.rstrip('/').split('/')[-1]}/")
+                )
+            if (
+                route is None
+                and path.startswith("/tasks/tasks/")
                 and path.count("/") == 4
             ):
                 # The task detail route. Reached only by fallback, so the exact
@@ -868,6 +944,22 @@ class StubDRFServer:
     def add_daily_plan_task_conflict(self, value: str | None) -> None:
         self.backend.add_daily_plan_task_conflict = value
 
+    @property
+    def transition_failure(self) -> str | None:
+        return self.backend.transition_failure
+
+    @transition_failure.setter
+    def transition_failure(self, value: str | None) -> None:
+        self.backend.transition_failure = value
+
+    @property
+    def stub_now(self) -> str:
+        return self.backend.stub_now
+
+    @stub_now.setter
+    def stub_now(self, value: str) -> None:
+        self.backend.stub_now = value
+
     def seed_daily_plans(self, *plans: dict) -> None:
         """Replace the daily plans the stub serves.
 
@@ -924,13 +1016,14 @@ class StubDRFServer:
             json=request.get_json(silent=True),
         )
         result = self.backend.dispatch(method, path, recorded)
+        headers = getattr(result, "headers", {})
         if result.body is None:
-            return Response(status=result.status, headers=result.headers)
+            return Response(status=result.status, headers=headers)
         return Response(
             response=json.dumps(result.body),
             status=result.status,
             content_type="application/json",
-            headers=result.headers,
+            headers=headers,
         )
 
     def start(self, host: str = "127.0.0.1", port: int = 0) -> StubDRFServer:

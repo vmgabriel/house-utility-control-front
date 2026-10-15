@@ -837,6 +837,81 @@ class DRFAPIClient:
             )
         return body
 
+    async def mark_task_doing(self, access_token: str, task_id: str) -> Any:
+        """Move a task to ``doing``; returns the reloaded `TaskSerializer`.
+
+        The 409 is *not* a generic client error here. It is `TaskAlreadyDone`,
+        a business outcome with its own meaning, and the status is preserved on
+        the raised error so the adapter can recognise it and the board can tell
+        the user what actually happened instead of "request failed".
+
+        Deliberately a named method rather than `set_task_status(status)`: the
+        three transitions are three distinct backend endpoints with three
+        distinct rules, and a generic setter would hide that behind a parameter
+        that looks interchangeable when it is not.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/tasks/tasks/{task_id}/mark-doing/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Cannot move this task to doing", status_code=status, detail=body
+            )
+        return body
+
+    async def mark_task_done(self, access_token: str, task_id: str) -> Any:
+        """Move a task to ``done``; returns the reloaded `TaskSerializer`.
+
+        Same shape as :meth:`mark_task_doing`, one status apart: 200 with the
+        task, 409 `TaskAlreadyDone` when it is already finished.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/tasks/tasks/{task_id}/mark-done/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Cannot complete this task", status_code=status, detail=body
+            )
+        return body
+
+    async def reopen_task(self, access_token: str, task_id: str) -> Any:
+        """Return a finished task to ``todo``; returns the reloaded task.
+
+        The only route out of `done`. Note the 409 it raises for a task that was
+        *not* finished (`TaskNotCompleted`) -- that is the backend refusing to
+        use reopen as a general "set to todo", and it is why the board has no
+        "doing -> todo" arrow rather than a broken one.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/tasks/tasks/{task_id}/reopen/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Task not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Cannot reopen this task", status_code=status, detail=body
+            )
+        return body
+
     async def get_llm_health(self, access_token: str) -> Any:
         """Report whether the LLM provider behind the backend is reachable.
 

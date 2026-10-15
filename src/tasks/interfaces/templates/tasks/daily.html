@@ -3,19 +3,41 @@
 
 {% block content %}
 {#
-    ONE top-level x-data scope. It owns the date stepper and the generation
-    button's pending state -- the day's tasks are rendered server-side and need
-    no client state.
+    The daily board.
 
-    There is deliberately no second scope for the task rows. A plan's rows are
-    read-only on this page: changing a task's status is a backlog action, and
-    duplicating it here would mean two places to fix when the backend's status
-    transitions change. Nor does the generation form open one of its own: a form
-    with a single button does not need a scope of its own, and adding one would
-    be a second `x-data` root inside one page body, which is the failure this
-    rule is written against (AGENTS.md, rule 5).
+    ONE top-level x-data scope owns all of it: the date stepper, the generation
+    button's pending state, and the whole drag-and-drop machine. Deliberately a
+    single root -- three `x-data="kanbanColumn(...)"` scopes, one per column, would
+    be three roots inside one page body, which is the failure AGENTS.md's Alpine
+    rule is written against. The columns are not components here; they are three
+    lists inside one board, and the board is what has state.
+
+    ## Why the drop targets are data, not JavaScript
+
+    `onMove` needs to know which column accepts which card, and that rule is
+    `Task.can_transition_to` -- in the domain, where the backend's three status
+    endpoints are mirrored. Each column renders the source statuses it accepts
+    into a `data-accepted-sources` attribute, and each card renders its own legal
+    destinations into a `<select>`. Both read the same function, so the drag rule
+    and the keyboard path cannot disagree about what is possible.
+
+    The two directions are deliberately not the same list: a column's attribute
+    answers "may a card *from here* be dropped on me", while a card's select
+    answers "where may a card *here* go". Conflating them produces a board whose
+    To Do column rejects a Done card while advertising that its own cards can
+    leave.
+
+    Two of the six possible moves are impossible -- `doing -> todo` and
+    `done -> doing` -- because the backend has no endpoint for either. See
+    `Task.can_transition_to` for the full argument. The consequence here is
+    visible rather than silent: a card in Doing offers exactly one destination,
+    and dragging it onto To Do is refused with an explanation instead of
+    appearing to work and then reverting.
 #}
-<div x-data="{ generating: false }" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+<div x-data="kanbanBoard""
+     data-move-base="{{ url_for('tasks.move_task', task_id='__TASK_ID__') }}"
+     data-csrf-token="{{ csrf_token }}"
+     class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
     {# ---------------------------------------------------------------- #}
     {# Header and date stepper                                          #}
@@ -98,7 +120,7 @@
                         data-testid="generate-daily-plan-button"
                         class="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 disabled:opacity-50 disabled:cursor-not-allowed">
                     <span x-show="!generating">Generate Daily Plan Manually</span>
-                    <span x-show="generating" x-cloak>Queeing&hellip;</span>
+                    <span x-show="generating" x-cloak>Queuing&hellip;</span>
                 </button>
             </form>
             <p class="mt-2 text-xs text-gray-500">
@@ -147,63 +169,140 @@
             {% endif %}
         </div>
 
-        {# ---------------------------------------------------------------- #}
-        {# The day's tasks, in the order the plan listed them               #}
-        {# ---------------------------------------------------------------- #}
-        {% if tasks %}
-        <ul class="space-y-3" data-testid="daily-task-list">
-            {% for task in tasks %}
-            <li class="p-4 bg-white rounded-lg shadow-sm border {{ task.badge_class }}"
-                data-testid="daily-task-row">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div class="min-w-0 flex-1">
-                        <div class="flex flex-wrap items-center gap-2">
-                            {# Status indicator. A filled circle for done, a ring
-                               for the rest -- decorative, so the text status
-                               below carries the real meaning for anyone who
-                               cannot see the shape. #}
-                            <span aria-hidden="true"
-                                  class="inline-flex items-center justify-center w-5 h-5 rounded-full border-2 {% if task.is_done %}bg-green-500 border-green-500 text-white{% else %}border-gray-300{% endif %} text-xs font-bold">
-                                {%- if task.is_done %}&#10003;{% endif -%}
-                            </span>
-                            <h3 class="font-medium {% if task.is_done %}line-through text-gray-400{% else %}text-gray-900{% endif %}">
-                                {{ task.name }}
-                            </h3>
-                            {% if task.is_overwhelmed %}
-                            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-800">
-                                &#9888;&#65039; Tarea grande
-                            </span>
-                            {% endif %}
-                        </div>
+        {# Result of the last move. `role="status"` announces it without
+           stealing focus: the drag path deliberately does not reload, so there
+           is no navigation to interrupt. #}
+        <div x-show="message" x-cloak x-transition.opacity role="status" aria-live="polite"
+             :class="messageOk ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'"
+             class="p-3 mb-4 rounded-lg text-sm" data-testid="move-result">
+            <span x-text="message"></span>
+        </div>
 
-                        <p class="mt-1 ml-7 text-xs text-gray-500">
-                            {{ task.status_label }}
-                            {%- if task.estimated_hours_label != '—' %}
-                                &middot; {{ task.estimated_hours_label }}
-                            {%- endif %}
-                            {%- if task.due_date %}
-                                &middot; due <time datetime="{{ task.due_date }}">{{ task.due_date }}</time>
-                            {%- endif %}
-                        </p>
-                    </div>
-                </div>
-            </li>
-            {% endfor %}
-        </ul>
-        {% else %}
-            <div class="p-8 text-center bg-white rounded-lg border border-dashed border-gray-300">
-                <p class="text-gray-600">This plan has no tasks.</p>
+        {% if completed_unavailable %}
+            {# Distinct from an empty Done column on purpose. "You finished
+               nothing" and "we could not ask" are different facts, and
+               collapsing them would let a backend outage look like a day where
+               the user got nothing done. #}
+            <div class="p-3 mb-4 text-sm rounded-lg border border-dashed border-amber-300 bg-amber-50"
+                 data-testid="board-completed-unavailable">
+                <p class="text-amber-800">
+                    Completed tasks could not be loaded, so the Done column may be incomplete.
+                </p>
             </div>
         {% endif %}
 
-        {# A task in the plan that the backlog no longer returns -- completed
-           since the plan was built, or deleted. Dropping it silently would make
-           the hours bar disagree with the rows above it with nothing to explain
-           the gap. #}
+        {# ---------------------------------------------------------------- #}
+        {# The board                                                       #}
+        {#                                                                     #}
+        {# The responsive story is plain CSS in the block below rather than #}
+        {# `grid-cols-1 md:grid-cols-3`, for one reason: this board's layout #}
+        {# is load-bearing and Tailwind is not. The columns' geometry is   #}
+        {# what makes a drop possible, so a styling failure here is not a   #}
+        {# cosmetic one -- it removes drop targets and the board stops      #}
+        {# accepting moves while still looking like a board. Written as    #}
+        {# static CSS it cannot be purged, JIT-scanned away, or simply     #}
+        {# absent, which is exactly what happened with `min-h-*` here.    #}
+        {#                                                                     #}
+        {# One column on a phone, three from 768px up. The breakpoint      #}
+        {# matches Tailwind's own `md`, so the two never disagree about   #}
+        {# where the layout changes if a class comes back later.           #}
+        {# ---------------------------------------------------------------- #}
+        <style>
+            .kanban-board {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 1rem;
+                align-items: start;
+            }
+            @media (min-width: 768px) {
+                .kanban-board { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            }
+        </style>
+        <div class="kanban-board"
+             data-testid="kanban-board">
+            {% for column in board.columns %}
+            <section class="p-3 bg-gray-100 rounded-lg border-2 border-transparent transition-colors"
+                     style="min-height: 12rem; display: flex; flex-direction: column;"
+                     data-testid="kanban-column"
+                     data-column-status="{{ column.status.value }}"
+                     aria-labelledby="kanban-{{ column.status.value }}-heading">
+                <div class="flex items-baseline justify-between gap-2 mb-3">
+                    <h2 id="kanban-{{ column.status.value }}-heading"
+                        class="text-sm font-semibold text-gray-900">
+                        {{ column.label }}
+                    </h2>
+                    {# The count and the column's hours. A column that says "3
+                       tasks" and nothing else makes the day's load invisible
+                       when the column is the interesting one. #}
+                    <span class="text-xs text-gray-500 shrink-0">
+                        {{ column.count_label }} &middot; {{ column.hours_label }}
+                    </span>
+                </div>
+
+                {#
+                    The drop list, with an inline `min-height` rather than a
+                    `min-h-*` class. Inline because this Tailwind build emits no
+                    `min-height` utilities at all -- `min-h-[6rem]` and even a
+                    plain `min-h-24` both compute to `0px` here -- and the
+                    failure is silent in the worst way: the column still renders,
+                    still reads as a column, and only stops being droppable.
+
+                    The height is what makes an empty column a drop target at
+                    all. Without it the list collapses to nothing, so the column
+                    that most needs to be easy to drop into is the one with no
+                    area to drop into, and filling it is the whole point of the
+                    drag.
+
+                    `aria-live="polite"` rather than `aria-live="assertive"`: a
+                    move is a confirmation, not an alarm, and an assertive
+                    announcement would interrupt whatever the user is reading.
+                #}
+                <div class="space-y-2 rounded"
+                     style="min-height: 6rem; flex: 1 1 auto;"
+                     data-kanban-list
+                     data-status="{{ column.status.value }}"
+                     data-accepted-sources="{{ column.accepted_sources }}"
+                     role="list"
+                     aria-live="polite"
+                     data-testid="kanban-list">
+                    {% for task in column.tasks %}
+                        {% include "tasks/_board_card.html" %}
+                    {% endfor %}
+                </div>
+
+                {#
+                    The empty-state note.
+
+                    **A sibling of the drop list, never a child of it.** This is
+                    not a layout preference. SortableJS resolves the element
+                    under the pointer to the nearest draggable inside the list it
+                    is hovering; with a paragraph there, that lookup finds no
+                    card, and the library walks into a state where the drop
+                    cannot be resolved at all. The observable result is that a
+                    card cannot be dropped into an empty column -- the one place
+                    a user most expects it to land, and the reason an empty
+                    column is the easiest target to aim at.
+
+                    It sits below the list rather than centred inside it so the
+                    drop area stays free of anything but cards.
+                #}
+                {% if column.is_empty %}
+                <p class="py-6 text-center text-xs text-gray-500"
+                   data-testid="kanban-column-empty">
+                    Nothing here.
+                </p>
+                {% endif %}
+            </section>
+            {% endfor %}
+        </div>
+
+        {# A card on the plan that no read returns -- deleted since the plan was
+           built. Dropping it silently would make the hours bar disagree with the
+           cards above it with nothing to explain the gap. #}
         {% if missing_task_count %}
-        <p class="mt-4 text-xs text-gray-500">
+        <p class="mt-4 text-xs text-gray-500" data-testid="missing-plan-tasks">
             {{ missing_task_count }} task{{ '' if missing_task_count == 1 else 's' }} on this plan
-            {{ 'is' if missing_task_count == 1 else 'are' }} no longer in the backlog and {{ 'is' if missing_task_count == 1 else 'are' }} not listed.
+            {{ 'is' if missing_task_count == 1 else 'are' }} no longer available and {{ 'is' if missing_task_count == 1 else 'are' }} not listed.
         </p>
         {% endif %}
     {% endif %}

@@ -37,6 +37,7 @@ from decimal import Decimal
 
 from src.tasks.domain.entities import (
     DEFAULT_OVERWHELM_THRESHOLD,
+    KANBAN_ORDER,
     DailyPlan,
     Goal,
     GoalProgress,
@@ -77,6 +78,16 @@ TASK_STATUS_STYLES: dict[str, str] = {
     "TODO": "bg-gray-100 text-gray-700",
     "DOING": "bg-blue-100 text-blue-800",
     "DONE": "bg-green-100 text-green-800",
+}
+
+#: The board's column headings. Kept beside `TASK_STATUS_LABELS` rather than
+#: in the template: "To do" is a column name and "Done" is a status badge, and
+#: having two spellings of the same three ideas on one page is how a board ends
+#: up with a "Done" column and "Completed" badges.
+KANBAN_COLUMN_LABELS: dict[TaskStatus, str] = {
+    TaskStatus.TODO: "To Do",
+    TaskStatus.DOING: "Doing",
+    TaskStatus.DONE: "Done",
 }
 
 GOAL_STATUS_LABELS: dict[str, str] = {
@@ -213,6 +224,13 @@ class TaskViewModel:
     #: `<time datetime="...">`, and the template has to be able to hand the
     #: machine-readable value and the human-readable one from the same field.
     completed_at: str
+    #: The backend's wire status, as a plain string.
+    #:
+    #: Handed to the board card's `data-status` attribute so `onMove` can decide
+    #: whether a drop is legal without the template doing any status comparison
+    #: itself. One of `TaskStatus`'s three `.value`s, which are exactly the three
+    #: the backend accepts on `mark-doing` / `mark-done` / `reopen`.
+    status_value: str
     #: Whether the goal detail page counts this task towards its progress bar.
     #:
     #: Reads `Task.completed_at`, which is the same fact `Task.is_completed`
@@ -225,6 +243,12 @@ class TaskViewModel:
     #: Id of the row's Alpine root, used to open one task's detail panel without
     #: a second `x-data` scope on the page (AGENTS.md, Alpine scope strictness).
     dom_id: str
+    #: The statuses this task may be moved to, as (wire value, label) pairs.
+    #:
+    #: Never empty for any of the three statuses -- `todo` has two destinations,
+    #: `doing` and `done` have one each -- so the card's control needs no
+    #: "nothing to move to" branch. See `Task.can_transition_to` for the matrix.
+    move_options: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_domain(
@@ -259,6 +283,7 @@ class TaskViewModel:
             is_overwhelmed=task.is_overwhelmed(threshold),
             is_overdue=task.is_overdue(today),
             is_done=task.status is TaskStatus.DONE,
+            status_value=task.status.value,
             completed_at=(
                 task.completed_at.isoformat() if task.completed_at is not None else ""
             ),
@@ -267,6 +292,13 @@ class TaskViewModel:
             llm_evaluation_failed=task.llm_evaluation_failed,
             description_preview=_preview(description),
             dom_id=f"task-{task.id}",
+            # From the domain's transition matrix, so the options in this select
+            # and the columns that accept a drag are the same rule. A `doing`
+            # task yields an empty tuple and renders a disabled control.
+            move_options=tuple(
+                (target.value, KANBAN_COLUMN_LABELS[target])
+                for target in task.allowed_targets()
+            ),
         )
 
     @property
@@ -445,6 +477,128 @@ def _health_label(health: LlmHealth) -> str:
     if health.available:
         return "IA disponible"
     return "IA no disponible"
+
+
+@dataclass(frozen=True, slots=True)
+class KanbanColumnViewModel:
+    """One column of the daily board: its status, its cards, and which cards it accepts.
+
+    ``accepted_sources`` answers "may a card *from here* be dropped on me", and
+    the direction matters. It is **not** the list of destinations a card sitting
+    in this column may move to -- that is the card's own select, and the two run
+    in opposite directions. Getting them backwards produces a board whose To Do
+    column refuses a Done card while advertising that its own cards can leave,
+    which reads as a broken board rather than as one following a rule.
+
+    Computed from `Task.can_transition_to(source, self.status)` for every
+    possible source, so it is a property of the column alone and is correct for
+    an **empty** column. That case is exactly why it is not derived from the
+    cards in it: an empty column is a legal drop target, and a rule read off its
+    contents would leave it accepting nothing -- so the last card could never be
+    dragged out of a column, because the column it left would then be the only
+    one that worked.
+
+    A comma-separated string because SortableJS's ``onMove`` reads it off a
+    ``data-`` attribute. Same source as the card's select, so the drag rule and
+    the keyboard path cannot disagree about what is possible.
+    """
+
+    status: TaskStatus
+    label: str
+    tasks: tuple[TaskViewModel, ...] = ()
+    #: Source statuses this column accepts, comma-separated wire values.
+    accepted_sources: str = ""
+    #: Total estimated hours in the column, for the column header.
+    hours_label: str = "0h"
+
+    @classmethod
+    def build(
+        cls,
+        status: TaskStatus,
+        tasks: list[Task],
+        *,
+        today: date,
+        threshold: Decimal = DEFAULT_OVERWHELM_THRESHOLD,
+    ) -> KanbanColumnViewModel:
+        task_models = tuple(
+            TaskViewModel.from_domain(task, today=today, threshold=threshold)
+            for task in tasks
+        )
+        # Read from `KANBAN_ORDER`, not from the column's own cards: the rule is
+        # a property of the destination, so it holds for an empty column too.
+        accepted = [
+            source for source in KANBAN_ORDER if Task.can_transition_to(source, status)
+        ]
+        total = Duration.zero()
+        for task in tasks:
+            if task.estimated_hours is not None:
+                total = total + task.estimated_hours
+        return cls(
+            status=status,
+            label=KANBAN_COLUMN_LABELS[status],
+            tasks=task_models,
+            accepted_sources=",".join(source.value for source in accepted),
+            hours_label=str(total) if total.is_estimated else "\u2014",
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.tasks
+
+    @property
+    def count_label(self) -> str:
+        return f"{len(self.tasks)} task{'' if len(self.tasks) == 1 else 's'}"
+
+    @property
+    def drop_class(self) -> str:
+        """The column's tint while a card hovers over it.
+
+        Amber for the target column rather than the blue of the drag ghost: blue
+        is the dragged card's own colour, and using it for two different things
+        at once makes it ambiguous which one is indicating the drop.
+        """
+        return "border-amber-400 bg-amber-50"
+
+
+@dataclass(frozen=True, slots=True)
+class KanbanViewModel:
+    """The whole board: three columns, in board order.
+
+    Assembled in one object so the template iterates rather than repeating the
+    same markup three times -- which is what keeps the column chrome (header,
+    empty state, drop styling) identical across the three, instead of three
+    hand-copied blocks that drift apart the first time one of them changes.
+    """
+
+    columns: tuple[KanbanColumnViewModel, ...] = ()
+
+    @classmethod
+    def build(
+        cls,
+        tasks: list[Task],
+        *,
+        today: date,
+        threshold: Decimal = DEFAULT_OVERWHELM_THRESHOLD,
+    ) -> KanbanViewModel:
+        return cls(
+            columns=tuple(
+                KanbanColumnViewModel.build(
+                    status,
+                    [task for task in tasks if task.status is status],
+                    today=today,
+                    threshold=threshold,
+                )
+                for status in KANBAN_ORDER
+            )
+        )
+
+    @property
+    def total_count(self) -> int:
+        return sum(len(column.tasks) for column in self.columns)
+
+    @property
+    def is_empty(self) -> bool:
+        return self.total_count == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,6 +839,8 @@ __all__ = [
     "GoalViewModel",
     "GoalsViewModel",
     "ImportanceViewModel",
+    "KanbanColumnViewModel",
+    "KanbanViewModel",
     "LlmHealthViewModel",
     "TaskViewModel",
 ]

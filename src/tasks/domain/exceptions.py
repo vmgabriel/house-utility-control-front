@@ -69,6 +69,28 @@ class TaskNotPlannableError(DomainException):
     """
 
 
+class TaskTransitionRejected(DomainException):
+    """Raised when the backend refuses a status change the board asked for.
+
+    This is the 409 from `mark-doing` / `mark-done` / `reopen`, and it arrives
+    on the two moves a board is most likely to attempt. `Task.can_transition_to`
+    already refuses to *offer* both of them, so reaching this means the backend
+    and the BFF disagreed -- which is a normal consequence of two copies of a
+    rule, not a bug:
+
+    * the task was moved in another tab since the board was rendered, so the
+      status the browser knew about is stale;
+    * the backend gained a rule the BFF has not seen;
+    * a client posted the transition directly, which is allowed.
+
+    So the message is the backend's own, carried through unchanged. Inventing a
+    BFF-side explanation would be worse on all three counts: it would claim a
+    cause the BFF cannot know, and it would drift from the wording the backend
+    chose for the same condition. The UI is expected to revert the card and show
+    this, because the board it came from is now wrong.
+    """
+
+
 class LlmUnavailableError(DomainException):
     """Raised when an LLM-backed action was requested but the backend is down.
 

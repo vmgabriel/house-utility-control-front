@@ -46,6 +46,7 @@ from src.tasks.domain.exceptions import (
     LlmUnavailableError,
     TaskNotFoundError,
     TaskNotPlannableError,
+    TaskTransitionRejected,
 )
 from src.tasks.domain.value_objects import (
     Duration,
@@ -53,8 +54,10 @@ from src.tasks.domain.value_objects import (
     LlmHealth,
     Priority,
     TaskId,
+    TaskStatus,
 )
 from src.tasks.interfaces.viewmodels import (
+    KANBAN_COLUMN_LABELS,
     PRIORITY_LABELS,
     BacklogViewModel,
     CompletedTasksViewModel,
@@ -62,8 +65,8 @@ from src.tasks.interfaces.viewmodels import (
     EmptyDailyPlanViewModel,
     GoalDetailViewModel,
     GoalsViewModel,
+    KanbanViewModel,
     LlmHealthViewModel,
-    TaskViewModel,
 )
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/tasks")
@@ -366,18 +369,52 @@ async def daily():
     target = requested if requested is not None else today
     max_hours = _max_daily_hours()
 
-    plan, backlog_tasks = await asyncio.gather(
+    # Three reads, because the board needs two disjoint sets of tasks and the
+    # backlog read is not one of them.
+    #
+    # `get_backlog` deliberately drops `done` (see the adapter), and the board's
+    # Done column is *made of* `done` tasks -- so the backlog alone would render
+    # a permanently empty third column while the hours bar claimed hours were
+    # spent on it. The completed read is therefore not an extra nicety here, it
+    # is what makes the board correct.
+    #
+    # `return_exceptions=True` on the completed read alone: the backlog and the
+    # plan are the page, so their failures propagate to the 503 handler, but a
+    # Done column that could not be read is a degraded board rather than a
+    # reason to deny the user the two columns that did load.
+    plan, backlog_tasks, completed_tasks = await asyncio.gather(
         current_app.get_daily_plan_use_case.execute(access_token, target),
         current_app.get_backlog_use_case.execute(access_token),
+        current_app.get_completed_tasks_use_case.execute(access_token),
+        return_exceptions=True,
     )
+    if isinstance(plan, BaseException):
+        raise plan
+    if isinstance(backlog_tasks, BaseException):
+        raise backlog_tasks
+    completed_list: list = (
+        [] if isinstance(completed_tasks, BaseException) else list(completed_tasks)
+    )
+    completed_unavailable = isinstance(completed_tasks, BaseException)
+    if completed_unavailable:
+        current_app.logger.warning(
+            "Completed tasks unavailable for the daily board: %s",
+            type(completed_tasks).__name__,
+        )
 
     if plan is None:
         return render_template(
             "tasks/daily.html",
             plan=None,
             empty=EmptyDailyPlanViewModel.for_date(target, max_hours=max_hours),
-            tasks=(),
+            # An empty board rather than no board, so the template's `if plan is
+            # none` branch is the only thing deciding between the two layouts --
+            # a third shape (a board absent from the context) is the kind of
+            # thing that renders as a blank page in one branch and a crash in
+            # the other.
+            board=None,
             missing_task_count=0,
+            completed_unavailable=False,
             max_hours=max_hours,
             today=today.isoformat(),
             selected_date=target.isoformat(),
@@ -392,25 +429,33 @@ async def daily():
     # Ordered by the plan's own `task_ids`, not by the backlog's ordering: the
     # sequence the LLM produced is the sequence the day was meant to be worked
     # in, and re-sorting it by the backlog's priority would discard that.
-    by_id = {str(task.id): task for task in backlog_tasks if task.id is not None}
+    #
+    # Resolved against the backlog *and* the completed list, because a card's
+    # column is its status and the two reads between them cover all three. The
+    # board then regroups them, which is the whole point of the page.
+    by_id = {
+        str(task.id): task
+        for task in [*backlog_tasks, *completed_list]
+        if task.id is not None
+    }
     ordered = [
         by_id[str(task_id)] for task_id in plan.task_ids if str(task_id) in by_id
     ]
-    # A task the backlog no longer returns (done since the plan was built, or
-    # deleted) is dropped rather than rendered as a blank row.
+    # A task on the plan that neither read returns -- deleted since the plan was
+    # built -- is dropped rather than rendered as a blank card. Counted so the
+    # hours bar and the cards visibly disagree by exactly that many rows rather
+    # than silently.
     missing = len(plan.task_ids) - len(ordered)
 
     return render_template(
         "tasks/daily.html",
         plan=DailyPlanViewModel.from_domain(plan, max_hours=max_hours),
         empty=None,
-        tasks=[
-            TaskViewModel.from_domain(
-                task, today=today, threshold=_overwhelm_threshold()
-            )
-            for task in ordered
-        ],
+        board=KanbanViewModel.build(
+            ordered, today=today, threshold=_overwhelm_threshold()
+        ),
         missing_task_count=missing,
+        completed_unavailable=completed_unavailable,
         max_hours=max_hours,
         today=today.isoformat(),
         selected_date=target.isoformat(),
@@ -537,6 +582,106 @@ async def delete_task(task_id):
         flash(str(exc), "error")
     else:
         flash("Task deleted.", "success")
+    return redirect(_back_target())
+
+
+def _parse_status(raw: str | None) -> TaskStatus:
+    """Parse the target status from the board's move control.
+
+    Raising a `DomainException` rather than letting `TaskStatus(raw)` raise a
+    bare `ValueError` is the whole point: the view's `except DomainException`
+    catches the first and turns it into a flash, and does not catch the second --
+    so a tampered or stale board posting `status=in-progress` would otherwise be
+    a 500 instead of a message.
+    """
+    text = (raw or "").strip()
+    try:
+        return TaskStatus(text)
+    except ValueError as exc:
+        allowed = ", ".join(KANBAN_COLUMN_LABELS[member] for member in TaskStatus)
+        raise DomainException(
+            f"A task can only be moved to one of: {allowed}."
+        ) from exc
+
+
+@tasks_bp.route("/<uuid:task_id>/move/", methods=["POST"])
+async def move_task(task_id):
+    """Move one card between the board's columns.
+
+    Two callers, one code path, same arrangement as the evaluate/decompose
+    triggers: a form post from the card's move control gets a flash and a
+    redirect, and the drag-and-drop handler's `fetch` gets JSON so it can revert
+    the card without a page load.
+
+    **A failure always answers 4xx, never 200-with-a-flag**, and the drag code
+    relies on that: it decides whether to put the card back by whether the
+    response was ok. A 200 carrying `{"ok": false}` would leave that decision to
+    a field the server and client both have to agree on the meaning of, and the
+    failure mode of getting it wrong is a card that looks moved and is not.
+
+    The 409 is passed through as 409 rather than flattened to 400, because the
+    backend's refusals are board-specific facts -- a finished task cannot go back
+    to Doing, a task that is not finished cannot be reopened -- and the client
+    shows the message rather than deciding what it meant.
+    """
+    access_token = _access_token()
+    if not access_token:
+        if _wants_json():
+            return jsonify({"ok": False, "message": "Not signed in."}), 401
+        return redirect(url_for("auth.login"))
+    if not _require_csrf():
+        if _wants_json():
+            return jsonify({"ok": False, "message": "Invalid CSRF token."}), 400
+        flash("Invalid CSRF token.", "error")
+        return redirect(url_for("tasks.daily"))
+
+    #: Set alongside `message` so the failure is reported with a status that
+    #: matches its cause, rather than by inspecting the exception afterwards.
+    failure_status = 400
+    try:
+        task = await current_app.move_task_use_case.execute(
+            access_token,
+            _parse_task_id(str(task_id)),
+            _parse_status(request.form.get("status")),
+        )
+    except TaskNotFoundError:
+        message, failure_status = "That task no longer exists.", 404
+    except TaskTransitionRejected as exc:
+        # The backend's own wording, verbatim. Two copies of a transition rule
+        # exist (this BFF's and the backend's) and a stale board can disagree
+        # with either, so the authoritative answer is the one the backend just
+        # gave -- not a message invented here that would claim a cause we cannot
+        # know.
+        message, failure_status = str(exc), 409
+    except DomainException as exc:
+        message = str(exc)
+    else:
+        message = f"{task.name} moved to {KANBAN_COLUMN_LABELS[task.status]}."
+        if _wants_json():
+            return (
+                jsonify(
+                    {
+                        "ok": True,
+                        "message": message,
+                        # Echoed back so the drag handler can reconcile the card
+                        # it optimistically moved with what the backend decided.
+                        # On a rejection this is absent, and the handler reverts.
+                        "status": task.status.value,
+                        "completed_at": (
+                            task.completed_at.isoformat()
+                            if task.completed_at is not None
+                            else None
+                        ),
+                    }
+                ),
+                200,
+            )
+        flash(message, "success")
+        return redirect(_back_target())
+
+    if _wants_json():
+        return jsonify({"ok": False, "message": message}), failure_status
+    flash(message, "error")
     return redirect(_back_target())
 
 

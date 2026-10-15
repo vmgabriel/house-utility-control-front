@@ -225,6 +225,42 @@ class TasksApiClient(Protocol):
         """
         ...
 
+    async def mark_task_doing(self, access_token: str, task_id: TaskId) -> Task:
+        """Move one task to ``doing`` and return it as the backend stored it.
+
+        The backend's `POST /tasks/<id>/mark-doing/`, which answers **200** with
+        the whole `TaskSerializer`. Not a 204: the reloaded task is the only
+        authoritative view of the result, and `completed_at` and `is_overwhelmed`
+        in particular are server-side facts a caller would otherwise have to
+        guess at after the move.
+
+        Raises `TaskTransitionRejected` on the backend's 409 `TaskAlreadyDone` --
+        a finished task cannot be pushed back to doing.
+        """
+        ...
+
+    async def mark_task_done(self, access_token: str, task_id: TaskId) -> Task:
+        """Move one task to ``done`` and return it as the backend stored it.
+
+        The backend's `POST /tasks/<id>/mark-done/`, answering **200** with the
+        full task, `completed_at` included. The transition is legal from `todo`
+        as well as from `doing`: finishing something without having started it is
+        ordinary, and the backend permits it.
+        """
+        ...
+
+    async def reopen_task(self, access_token: str, task_id: TaskId) -> Task:
+        """Send one finished task back to ``todo`` and return it reloaded.
+
+        The backend's `POST /tasks/<id>/reopen/`, answering **200** with the
+        full task and `completed_at` cleared. `reopen` is the **only** way out of
+        `done` -- `mark-doing` refuses a finished task with 409 -- and it
+        refuses in the other direction too, answering 409 `TaskNotCompleted` for a
+        task that was never finished. That second 409 is why there is no
+        "doing -> todo" path anywhere in this BFF.
+        """
+        ...
+
     async def get_llm_health(self, access_token: str) -> LlmHealth:
         """Report whether the LLM provider is reachable.
 

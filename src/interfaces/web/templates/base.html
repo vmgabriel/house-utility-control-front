@@ -22,6 +22,32 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
     {% include "tasks/_markdown.html" %}
+    {% include "tasks/_kanban_board.html" %}
+
+    {#
+        Drag and drop, for the daily board only.
+
+        SortableJS rather than the native HTML5 drag-and-drop API, and the
+        reason is touch: `dragstart`/`dragover`/`drop` do not fire on a phone at
+        all, so a board built on them would work on a laptop and be completely
+        inert on the device the same user is holding. SortableJS listens to
+        pointer events, so one code path serves mouse, touch, and pen.
+
+        It is also the only way to get the affordances a board needs for free --
+        the drop placeholder, the ghost card, and the 150ms slide that tells the
+        user where a card will land before it does.
+
+        Loaded on every page rather than only on the board's, for one honest
+        reason: a `defer`-less script that arrives after Alpine has booted finds
+        no `alpine:init` event to listen for, so a conditionally-loaded library
+        has to poll for the global instead. ~20kB of that trade is not worth it
+        for a page with no board on it. Pinned for the same reason as the
+        markdown libraries: this one gets to inject markup into the page, so
+        `@latest` would be a supply-chain wildcard.
+
+        `tests/e2e/conftest.py` vendors it for the suite; see `VENDOR_ASSETS`.
+    #}
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <style>
@@ -152,5 +178,7 @@
     <main id="main-content" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {% block content %}{% endblock %}
     </main>
+
+
 </body>
 </html>

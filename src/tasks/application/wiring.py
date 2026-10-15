@@ -28,6 +28,7 @@ from src.tasks.application.use_cases import (
     GetGoalDetailUseCase,
     GetGoalsUseCase,
     GetLlmHealthUseCase,
+    MoveTaskUseCase,
     TriggerLlmDecompositionUseCase,
     TriggerLlmEvaluationUseCase,
     UpdateTaskUseCase,
@@ -48,6 +49,7 @@ class TasksUseCases:
     get_daily_plan: GetDailyPlanUseCase
     generate_daily_plan: GenerateDailyPlanUseCase
     add_task_to_daily_plan: AddTaskToTodayPlanUseCase
+    move_task: MoveTaskUseCase
     get_llm_health: GetLlmHealthUseCase
     trigger_llm_evaluation: TriggerLlmEvaluationUseCase
     trigger_llm_decomposition: TriggerLlmDecompositionUseCase
@@ -65,6 +67,7 @@ class TasksUseCases:
         ("get_daily_plan_use_case", "get_daily_plan"),
         ("generate_daily_plan_use_case", "generate_daily_plan"),
         ("add_task_to_daily_plan_use_case", "add_task_to_daily_plan"),
+        ("move_task_use_case", "move_task"),
         ("get_llm_health_use_case", "get_llm_health"),
         ("trigger_llm_evaluation_use_case", "trigger_llm_evaluation"),
         ("trigger_llm_decomposition_use_case", "trigger_llm_decomposition"),
@@ -107,6 +110,7 @@ def build_tasks_use_cases(
         add_task_to_daily_plan=AddTaskToTodayPlanUseCase(
             tasks_client=tasks_client, clock=resolved_clock
         ),
+        move_task=MoveTaskUseCase(tasks_client=tasks_client),
         get_llm_health=GetLlmHealthUseCase(tasks_client=tasks_client),
         trigger_llm_evaluation=TriggerLlmEvaluationUseCase(tasks_client=tasks_client),
         trigger_llm_decomposition=TriggerLlmDecompositionUseCase(

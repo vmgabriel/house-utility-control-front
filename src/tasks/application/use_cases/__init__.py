@@ -17,6 +17,7 @@ from src.tasks.application.use_cases.get_daily_plan import GetDailyPlanUseCase
 from src.tasks.application.use_cases.get_goal_detail import GetGoalDetailUseCase
 from src.tasks.application.use_cases.get_goals import GetGoalsUseCase
 from src.tasks.application.use_cases.get_llm_health import GetLlmHealthUseCase
+from src.tasks.application.use_cases.move_task import MoveTaskUseCase
 from src.tasks.application.use_cases.trigger_llm import (
     TriggerLlmDecompositionUseCase,
     TriggerLlmEvaluationUseCase,
@@ -34,6 +35,7 @@ __all__ = [
     "GetGoalDetailUseCase",
     "GetGoalsUseCase",
     "GetLlmHealthUseCase",
+    "MoveTaskUseCase",
     "TriggerLlmDecompositionUseCase",
     "TriggerLlmEvaluationUseCase",
     "UpdateTaskUseCase",

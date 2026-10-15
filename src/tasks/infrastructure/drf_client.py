@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from datetime import date
 from logging import getLogger
+from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -51,6 +52,7 @@ from src.tasks.domain.exceptions import (
     LlmUnavailableError,
     TaskNotFoundError,
     TaskNotPlannableError,
+    TaskTransitionRejected,
 )
 from src.tasks.domain.value_objects import (
     DailyPlanId,
@@ -463,6 +465,65 @@ class DrfTasksClient:
             raise TaskNotFoundError("Task not found or not accessible.") from exc
         except DRFAPIClientError as exc:
             raise _as_llm_unavailable(exc) from exc
+
+    # ------------------------------------------------------------------ #
+    # Status transitions
+    #
+    # Three methods for three backend endpoints, sharing one private helper.
+    # They are not folded into a single `set_status` because the backend does not
+    # offer a generic status write -- `UpdateTaskSerializer` has no `status`
+    # field -- so a generic method would be a fiction at the adapter layer with
+    # a three-way branch hiding inside it.
+    # ------------------------------------------------------------------ #
+    async def _apply_transition(self, call: Any, task_id: TaskId, what: str) -> Task:
+        """Run one transition endpoint and map the task it returns.
+
+        `call` is the coroutine for the specific endpoint, already bound to the
+        token and id, so this handles only what the three share: the 404, and the
+        409 that means the backend refused the transition.
+
+        The 409 becomes `TaskTransitionRejected` carrying the backend's own
+        wording, and the two are kept distinguishable on the way out because the
+        board has to say something specific: "this task is already finished" and
+        "only a finished task can be reopened" call for different reactions
+        from the user, and the BFF cannot derive which one applies from the
+        status it was handed -- the row on screen may be stale.
+        """
+        try:
+            body = await call
+        except NotFoundError as exc:
+            raise TaskNotFoundError("Task not found or not accessible.") from exc
+        except DRFAPIClientError as exc:
+            if exc.status_code == 409:
+                raise TaskTransitionRejected(
+                    _backend_detail(exc, f"Could not {what}.")
+                ) from exc
+            raise
+        return map_task(_validated(DRFTaskResponse, _as_mapping(body, "Task"), "Task"))
+
+    async def mark_task_doing(self, access_token: str, task_id: TaskId) -> Task:
+        """Move a task to ``doing``; 409 `TaskAlreadyDone` for a finished one."""
+        return await self._apply_transition(
+            self.api_client.mark_task_doing(access_token, str(task_id)),
+            task_id,
+            "move this task to Doing",
+        )
+
+    async def mark_task_done(self, access_token: str, task_id: TaskId) -> Task:
+        """Move a task to ``done``; 409 `TaskAlreadyDone` if already finished."""
+        return await self._apply_transition(
+            self.api_client.mark_task_done(access_token, str(task_id)),
+            task_id,
+            "complete this task",
+        )
+
+    async def reopen_task(self, access_token: str, task_id: TaskId) -> Task:
+        """Return a finished task to ``todo``; 409 unless it was finished."""
+        return await self._apply_transition(
+            self.api_client.reopen_task(access_token, str(task_id)),
+            task_id,
+            "reopen this task",
+        )
 
     async def get_llm_health(self, access_token: str) -> LlmHealth:
         """Report provider reachability, or raise for the use case to soften.

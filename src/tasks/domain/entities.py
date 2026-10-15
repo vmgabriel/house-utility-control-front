@@ -31,6 +31,7 @@ from src.tasks.domain.value_objects import (
     MAX_DESCRIPTION_LENGTH,
     MAX_NAME_LENGTH,
     MIN_IMPORTANCE,
+    TASK_TRANSITIONS,
     DailyPlanId,
     Duration,
     GoalId,
@@ -39,6 +40,7 @@ from src.tasks.domain.value_objects import (
     Priority,
     TaskId,
     TaskStatus,
+    TaskTransition,
     normalize_markdown,
     normalize_name,
 )
@@ -66,6 +68,20 @@ __all__ = [
 #: and the use case overrides it from configuration, so a deployment can change
 #: it without a code change.
 DEFAULT_OVERWHELM_THRESHOLD = Decimal("4.0")
+
+#: The board's column order, left to right.
+#:
+#: Lives in the domain rather than in the template because it is the order the
+#: *rules* are expressed in: `allowed_targets` walks it, so a card's move
+#: options come out in the same sequence the columns appear. Putting it in the
+#: template would give two independent orders -- the columns and the options --
+#: free to disagree, and the disagreement would look like a board whose
+#: dropdown is shuffled.
+KANBAN_ORDER: tuple[TaskStatus, ...] = (
+    TaskStatus.TODO,
+    TaskStatus.DOING,
+    TaskStatus.DONE,
+)
 
 
 def _require_exact_date(value: object, label: str) -> None:
@@ -246,6 +262,69 @@ class Task:
             return False
         return self.estimated_hours.amount > threshold
 
+    @staticmethod
+    def can_transition_to(source: TaskStatus, target: TaskStatus) -> bool:
+        """Whether a task in `source` may be moved to `target`.
+
+        This is the board's rulebook: which of the six drags a Kanban offers are
+        ones the backend can actually perform. Two of the six cannot be, and
+        pretending otherwise is the expensive mistake -- a board that offers a
+        move and then fails it teaches the user that the board is unreliable,
+        which costs more than a board with two absent arrows.
+
+        The two absences, both inherited from the backend rather than chosen here:
+
+        ==================  ==========================================
+        Move                Why not
+        ==================  ==========================================
+        ``doing -> todo``   ``reopen`` answers 409 unless the task is
+                            *finished*, and nothing else sets ``todo``.
+        ``done -> doing``   ``mark_as_doing`` answers 409 on a finished
+                            task, and nothing else sets ``doing``.
+        ==================  ==========================================
+
+        Everything else is allowed, including the diagonals the brief did not
+        ask about: ``todo -> done`` goes straight through ``mark_as_done``,
+        because a task finished without ever being started is a normal thing
+        (you did it, you did not narrate it) and the backend permits it.
+
+        **The backend remains the authority.** This is a local mirror of a rule
+        it also enforces, and the two could disagree -- it may gain an endpoint,
+        or a task on screen may have been moved in another tab since the page was
+        rendered. So a `False` here is used to *avoid offering* a move, never to
+        reject one the client asked for: a move that reaches the backend anyway
+        is decided by its 409, which the adapter turns into
+        `TaskTransitionRejected`. The same posture as
+        :meth:`is_overwhelmed`, which prefers the backend's stored verdict and
+        falls back to a local comparison only when there is none.
+        """
+        if not isinstance(source, TaskStatus) or not isinstance(target, TaskStatus):
+            raise InvalidTaskError("Task statuses must be TaskStatus members.")
+        if source is target:
+            return False
+        if source is TaskStatus.DONE and target is TaskStatus.DOING:
+            return False
+        if source is TaskStatus.DOING and target is TaskStatus.TODO:
+            return False
+        return True
+
+    @staticmethod
+    def transition_for(source: TaskStatus, target: TaskStatus) -> TaskTransition | None:
+        """The transition that performs `source -> target`, or `None`.
+
+        `None` means the backend has no single operation for it -- which today
+        can only be a same-status no-op, since the two forbidden pairs are both
+        unreachable by construction (`done -> doing` would need to *unset*
+        `completed_at` while also setting `doing`, and no endpoint does both).
+
+        Kept separate from :meth:`can_transition_to` so that callers can ask
+        "may I?" and "how?" separately: the board asks the first, the use case
+        asks the second, and neither has to know about the other.
+        """
+        if not Task.can_transition_to(source, target):
+            return None
+        return TASK_TRANSITIONS[target]
+
     def is_completed(self) -> bool:
         """Whether the backend has recorded this task as finished.
 
@@ -258,6 +337,29 @@ class Task:
         reading two different definitions of "finished".
         """
         return self.completed_at is not None
+
+    def can_move_to(self, target: TaskStatus) -> bool:
+        """Whether *this* task may be moved from its own status to `target`.
+
+        The instance-level spelling of :meth:`can_transition_to`, so a caller
+        holding a task does not have to remember to pass ``task.status`` -- an
+        omission that would silently answer a different question, because the
+        static one takes the source as its first argument.
+        """
+        return self.can_transition_to(self.status, target)
+
+    def allowed_targets(self) -> tuple[TaskStatus, ...]:
+        """Every status this task may be moved to, in board order.
+
+        Used to render a card's move control, so the options offered are exactly
+        the moves the backend accepts -- never a superset the user discovers to
+        be wrong by trying it.
+        """
+        return tuple(
+            target
+            for target in KANBAN_ORDER
+            if self.can_transition_to(self.status, target)
+        )
 
     def start(self) -> None:
         """Move to `DOING`.
