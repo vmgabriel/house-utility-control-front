@@ -37,6 +37,9 @@ src/
 ├── rentals/                # BOUNDED CONTEXT: Properties, Bills, Payments
 │   └── (same 4-layer structure)
 │
+├── purchases/              # BOUNDED CONTEXT: Shopping Lists & Wishlist
+│   └── (same 4-layer structure)
+│
 └── interfaces/             # COMPOSITION ROOT: no business logic lives here
     └── web/
         ├── app.py          # THE ONLY PLACE that knows about Flask, httpx, and all contexts

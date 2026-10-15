@@ -62,6 +62,10 @@ select = ["E", "F", "I", "N", "W", "B", "UP"]
 # `(str, Enum)` approach so the infrastructure layer can serialise them straight
 # to the DRF JSON API, mirroring the backend's own StrEnum members.
 "src/tasks/domain/value_objects.py" = ["UP042"]
+# The purchases enums (ItemStatus, ListPriority, ItemPriority) follow the same
+# `(str, Enum)` approach so the infrastructure layer can serialise them straight
+# to the DRF JSON API, mirroring the backend's own StrEnum members.
+"src/purchases/domain/value_objects.py" = ["UP042"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
