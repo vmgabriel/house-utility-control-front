@@ -987,3 +987,539 @@ class DRFAPIClient:
                 "Failed to trigger task decomposition", status_code=status, detail=body
             )
         return body
+
+    # ------------------------------------------------------------------ #
+    # Purchases: shopping lists, wishlist, and the shared tag catalogue
+    #
+    # One method per endpoint, mirroring the blocks above. Every purchases URL is
+    # written exactly once, here, so a backend rename cannot leave half the
+    # context pointing at the old route while the other half has moved.
+    #
+    # Two response shapes are easy to get wrong and are commented where they
+    # occur, because both look like a 200-with-a-body and neither is what the
+    # name suggests:
+    #
+    # * a soft delete answers **200 with the list**, not 204 -- `is_active`
+    #   flips to false and the rows survive.
+    # * mark-item-purchased answers **200 with the whole list** (or the whole
+    #   wishlist), not with the item. That response is also the only place the
+    #   aggregate's recomputed `status` and `completed_at` appear.
+    # ------------------------------------------------------------------ #
+    async def list_shopping_lists(self, access_token: str) -> Any:
+        """The caller's **active** shopping lists.
+
+        `GET /shopping-lists/` is filtered to `is_active=true` server-side; a
+        soft-deleted list is simply absent. There is no query parameter that
+        widens it, which is why the archived set is a separate method.
+        """
+        status, body = await self._request(
+            "GET", "/purchases/shopping-lists/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list shopping lists", status_code=status, detail=body
+            )
+        return body
+
+    async def list_inactive_shopping_lists(self, access_token: str) -> Any:
+        """The caller's soft-deleted lists, which they can restore."""
+        status, body = await self._request(
+            "GET", "/purchases/shopping-lists/inactive/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list archived shopping lists",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
+    async def get_shopping_list(self, access_token: str, list_id: str) -> Any:
+        """One list with its items nested.
+
+        A 404 means "missing" *or* "not yours" -- every purchases route is
+        owner-scoped that way -- and the two are deliberately not separable here.
+        """
+        status, body = await self._request(
+            "GET", f"/purchases/shopping-lists/{list_id}/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch shopping list", status_code=status, detail=body
+            )
+        return body
+
+    async def create_shopping_list(self, access_token: str, payload: dict) -> Any:
+        """Create a list. `priority` is optional; the API defaults it to medium."""
+        status, body = await self._request(
+            "POST",
+            "/purchases/shopping-lists/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status in (400, 409):
+            raise ValidationError(
+                "Shopping list validation failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to create shopping list", status_code=status, detail=body
+            )
+        return body
+
+    async def update_shopping_list(
+        self, access_token: str, list_id: str, payload: dict
+    ) -> Any:
+        """PATCH the list's name or priority. An empty body is a 400."""
+        status, body = await self._request(
+            "PATCH",
+            f"/purchases/shopping-lists/{list_id}/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Shopping list update failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to update shopping list", status_code=status, detail=body
+            )
+        return body
+
+    async def delete_shopping_list(self, access_token: str, list_id: str) -> Any:
+        """Soft-delete a list. Answers **200 with the list**, not 204.
+
+        A soft delete: `is_active` flips to false, the rows and their items
+        survive, and `restore_shopping_list` brings them back. The body is
+        returned rather than discarded because it is the archived list the
+        overview renders after the redirect.
+        """
+        status, body = await self._request(
+            "DELETE", f"/purchases/shopping-lists/{list_id}/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to archive shopping list", status_code=status, detail=body
+            )
+        return body
+
+    async def restore_shopping_list(self, access_token: str, list_id: str) -> Any:
+        """Bring an archived list back, with its items intact."""
+        status, body = await self._request(
+            "POST",
+            f"/purchases/shopping-lists/{list_id}/restore/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to restore shopping list", status_code=status, detail=body
+            )
+        return body
+
+    async def add_shopping_list_item(
+        self, access_token: str, list_id: str, payload: dict
+    ) -> Any:
+        """Add an item. Answers **201 with the whole list**, items nested.
+
+        The body is not the new item -- it is the reloaded aggregate, and it is
+        the only place the new item's id appears. `quantity` must be >= 1 and
+        `details` is optional.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/purchases/shopping-lists/{list_id}/add-item/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Shopping list item validation failed",
+                status_code=status,
+                detail=body,
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to add item to shopping list", status_code=status, detail=body
+            )
+        return body
+
+    async def update_shopping_list_item(
+        self, access_token: str, list_id: str, item_id: str, payload: dict
+    ) -> Any:
+        """PATCH one item. Answers 200 with the **item**, not the list.
+
+        The one route in this block that does not return the aggregate: the
+        backend's `ShoppingListItemDetailView` serialises `ShoppingListItemSerializer`.
+        """
+        status, body = await self._request(
+            "PATCH",
+            f"/purchases/shopping-lists/{list_id}/items/{item_id}/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list item not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Shopping list item update failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to update shopping list item", status_code=status, detail=body
+            )
+        return body
+
+    async def delete_shopping_list_item(
+        self, access_token: str, list_id: str, item_id: str
+    ) -> Any:
+        """Remove an item. Answers 200 with the reloaded **list**, not 204."""
+        status, body = await self._request(
+            "DELETE",
+            f"/purchases/shopping-lists/{list_id}/items/{item_id}/",
+            access_token=access_token,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list item not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to delete shopping list item", status_code=status, detail=body
+            )
+        return body
+
+    async def mark_shopping_list_item_purchased(
+        self, access_token: str, list_id: str, item_id: str
+    ) -> Any:
+        """Tick an item off. Answers **200 with the whole reloaded list**.
+
+        The same response carries the aggregate's recomputed `status` and
+        `completed_at`, so the caller learns in one round trip whether that tick
+        completed the list.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/purchases/shopping-lists/{list_id}/items/{item_id}/mark-purchased/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list item not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to mark shopping list item as purchased",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
+    async def add_shopping_list_item_tags(
+        self, access_token: str, list_id: str, item_id: str, tag_names: list[str]
+    ) -> Any:
+        """Attach tags by name. Answers 200 with the **item**.
+
+        The backend's `AddTagsToItem` creates any tag that does not exist yet,
+        which is why this takes names and not ids.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/purchases/shopping-lists/{list_id}/items/{item_id}/tags/",
+            access_token=access_token,
+            json_data={"tag_names": tag_names},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list item not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Tagging the item failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to tag shopping list item", status_code=status, detail=body
+            )
+        return body
+
+    async def remove_shopping_list_item_tags(
+        self, access_token: str, list_id: str, item_id: str, tag_ids: list[str]
+    ) -> Any:
+        """Detach tags by id. Answers 200 with the item.
+
+        `DELETE` with a body, which is what `RemoveTagsSerializer` expects. By id
+        rather than by name: attaching creates catalogue entries on demand, so a
+        name is not a stable handle for an existing attachment the way an id is.
+        """
+        status, body = await self._request(
+            "DELETE",
+            f"/purchases/shopping-lists/{list_id}/items/{item_id}/tags/",
+            access_token=access_token,
+            json_data={"tag_ids": tag_ids},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Shopping list item not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Removing tags failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to remove tags from shopping list item",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
+    async def get_wishlist(self, access_token: str) -> Any:
+        """The caller's wishlist, created on first access.
+
+        `GET /wishlist/` is routed to the backend's `GetOrCreateWishlist` and
+        answers **200 either way** -- it cannot be distinguished from a create by
+        status code, which is why this is not named `create_...`.
+        """
+        status, body = await self._request(
+            "GET", "/purchases/wishlist/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch wishlist", status_code=status, detail=body
+            )
+        return body
+
+    async def update_wishlist(self, access_token: str, payload: dict) -> Any:
+        """Rename the wishlist. Not addressed by uuid -- it is the caller's own."""
+        status, body = await self._request(
+            "PATCH",
+            "/purchases/wishlist/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status in (400, 409):
+            raise ValidationError(
+                "Wishlist update failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to update wishlist", status_code=status, detail=body
+            )
+        return body
+
+    async def add_wishlist_item(self, access_token: str, payload: dict) -> Any:
+        """Add a wanted item. Answers **201 with the whole wishlist**.
+
+        `estimated_price` is sent as a **string** because `AddWishlistItemSerializer`
+        declares a `DecimalField`; the API's own responses render it the same way.
+        An absent price is *omitted* rather than sent as `null`: the field is
+        `required=False`, and omitting it is what "no estimate" means on create.
+        """
+        status, body = await self._request(
+            "POST",
+            "/purchases/wishlist/add-item/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status in (400, 409):
+            raise ValidationError(
+                "Wishlist item validation failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to add item to wishlist", status_code=status, detail=body
+            )
+        return body
+
+    async def update_wishlist_item(
+        self, access_token: str, item_id: str, payload: dict
+    ) -> Any:
+        """PATCH one wishlist item. Answers 200 with the item, not the wishlist."""
+        status, body = await self._request(
+            "PATCH",
+            f"/purchases/wishlist/items/{item_id}/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Wishlist item not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Wishlist item update failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to update wishlist item", status_code=status, detail=body
+            )
+        return body
+
+    async def delete_wishlist_item(self, access_token: str, item_id: str) -> Any:
+        """Remove a wishlist item. Answers 200 with the reloaded wishlist."""
+        status, body = await self._request(
+            "DELETE",
+            f"/purchases/wishlist/items/{item_id}/",
+            access_token=access_token,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Wishlist item not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to delete wishlist item", status_code=status, detail=body
+            )
+        return body
+
+    async def mark_wishlist_item_purchased(
+        self, access_token: str, item_id: str
+    ) -> Any:
+        """Tick a wishlist item off. Answers **200 with the whole wishlist**."""
+        status, body = await self._request(
+            "POST",
+            f"/purchases/wishlist/items/{item_id}/mark-purchased/",
+            access_token=access_token,
+            json_data={},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Wishlist item not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to mark wishlist item as purchased",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
+    async def add_wishlist_item_tags(
+        self, access_token: str, item_id: str, tag_names: list[str]
+    ) -> Any:
+        """Attach tags by name to a wishlist item. Answers 200 with the item."""
+        status, body = await self._request(
+            "POST",
+            f"/purchases/wishlist/items/{item_id}/tags/",
+            access_token=access_token,
+            json_data={"tag_names": tag_names},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Wishlist item not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Tagging the item failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to tag wishlist item", status_code=status, detail=body
+            )
+        return body
+
+    async def remove_wishlist_item_tags(
+        self, access_token: str, item_id: str, tag_ids: list[str]
+    ) -> Any:
+        """Detach tags by id from a wishlist item. Answers 200 with the item."""
+        status, body = await self._request(
+            "DELETE",
+            f"/purchases/wishlist/items/{item_id}/tags/",
+            access_token=access_token,
+            json_data={"tag_ids": tag_ids},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Wishlist item not found", status_code=404)
+        if status in (400, 409):
+            raise ValidationError(
+                "Removing tags failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to remove tags from wishlist item",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
+    async def list_purchases_tags(self, access_token: str) -> Any:
+        """The shared tag catalogue.
+
+        Global, not owner-scoped: `Tag` has no owner column and the backend's
+        `TagListView` takes no user.
+        """
+        status, body = await self._request(
+            "GET", "/purchases/tags/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list tags", status_code=status, detail=body
+            )
+        return body
+
+    async def create_purchases_tag(self, access_token: str, name: str) -> Any:
+        """Add a tag to the catalogue. **201 for a new tag, 200 for an existing one.**
+
+        The backend's `CreateTag` is idempotent by name, and the status code is
+        the only place that difference is visible -- so it is preserved here
+        rather than collapsed, and the adapter does not pretend it can tell them
+        apart.
+        """
+        status, body = await self._request(
+            "POST",
+            "/purchases/tags/",
+            access_token=access_token,
+            json_data={"name": name},
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status in (400, 409):
+            raise ValidationError(
+                "Tag validation failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to create tag", status_code=status, detail=body
+            )
+        return body
