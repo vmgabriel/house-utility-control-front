@@ -23,6 +23,16 @@ from src.budget.infrastructure.repositories.transaction_repository import (
 )
 from src.identity.domain.ports import AuthRepositoryPort
 from src.identity.infrastructure.repository import DRFAuthRepository
+from src.purchases.domain.ports import (
+    ShoppingListRepositoryPort,
+    TagRepositoryPort,
+    WishlistRepositoryPort,
+)
+from src.purchases.infrastructure.repositories import (
+    DRFShoppingListRepository,
+    DRFTagRepository,
+    DRFWishlistRepository,
+)
 from src.tasks.application.ports import TasksApiClient
 from src.tasks.infrastructure.drf_client import DrfTasksClient
 
@@ -35,6 +45,13 @@ PAIRS = [
     # into `args[0]`. That makes the parameter *order* load-bearing here, which
     # is exactly what the signature comparison below checks.
     (TasksApiClient, DrfTasksClient),
+    # Three purchases protocols rather than one merged adapter: a shopping-list
+    # item is addressed *under* its list, a wishlist item by id alone, and the
+    # tag catalogue is shared and idempotent. The order of `access_token` first
+    # is load-bearing for the same refresh reason as tasks.
+    (ShoppingListRepositoryPort, DRFShoppingListRepository),
+    (WishlistRepositoryPort, DRFWishlistRepository),
+    (TagRepositoryPort, DRFTagRepository),
 ]
 
 

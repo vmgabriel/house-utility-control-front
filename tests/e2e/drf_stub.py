@@ -227,6 +227,14 @@ class StubBackend:
         self.goals: list[dict] = []
         #: Backend-owned daily plans; the /tasks/daily-plans/ endpoint serves these.
         self.daily_plans: list[dict] = []
+        #: Backend-owned shopping lists; `/purchases/shopping-lists/` serves
+        #: these, filtered by `is_active` as the backend does.
+        self.shopping_lists: list[dict] = []
+        #: The caller's single wishlist, or `None` until the first read creates
+        #: it -- which is what `GetOrCreateWishlist` does.
+        self.wishlist: dict | None = None
+        #: The shared, global tag catalogue. Not owner-scoped, as in the backend.
+        self.purchases_tags: list[dict] = []
         #: Whether the fake LLM provider answers. False makes the health probe,
         #: both task triggers, and daily-plan generation answer 503, which is how
         #: the real backend reports an unreachable provider.
@@ -264,6 +272,9 @@ class StubBackend:
             self.tasks = []
             self.goals = []
             self.daily_plans = []
+            self.shopping_lists = []
+            self.wishlist = None
+            self.purchases_tags = []
             self.llm_available = True
             self.add_daily_plan_task_conflict = None
             self.transition_failure = None
@@ -499,6 +510,259 @@ class StubBackend:
         self.on_call("POST", "/tasks/tasks/<id>/decompose/", self._llm_trigger_response)
         self.on_call("*", "/tasks/tasks/<id>/", self._task_detail_response)
         self.on_call("*", "/tasks/goals/<id>/", self._goal_detail_response)
+
+        # Purchases. The three collection routes are registered by exact path,
+        # because each has a per-id sibling of the same shape (`inactive/` beside
+        # `<uuid>/`, for one) and a fallback matcher would swallow whichever was
+        # registered later.
+        self.on_call("GET", "/purchases/shopping-lists/", self._shopping_lists_response)
+        self.on_call(
+            "GET",
+            "/purchases/shopping-lists/inactive/",
+            self._archived_shopping_lists_response,
+        )
+        self.on_call(
+            "POST", "/purchases/shopping-lists/", self._create_shopping_list_response
+        )
+        self.on_call(
+            "*", "/purchases/shopping-lists/<id>/", self._shopping_list_detail_response
+        )
+        self.on_call(
+            "POST",
+            "/purchases/shopping-lists/<id>/add-item/",
+            self._add_shopping_list_item_response,
+        )
+        self.on_call(
+            "POST",
+            "/purchases/shopping-lists/<id>/items/<item_id>/mark-purchased/",
+            self._mark_shopping_list_item_response,
+        )
+        self.on_call("GET", "/purchases/wishlist/", self._wishlist_response)
+        self.on_call("PATCH", "/purchases/wishlist/", self._update_wishlist_response)
+        self.on_call(
+            "POST", "/purchases/wishlist/add-item/", self._add_wishlist_item_response
+        )
+        self.on_call(
+            "POST",
+            "/purchases/wishlist/items/<item_id>/mark-purchased/",
+            self._mark_wishlist_item_response,
+        )
+        self.on_call("GET", "/purchases/tags/", self._tags_response)
+        self.on_call("POST", "/purchases/tags/", self._create_tag_response)
+
+    # -- purchases ---------------------------------------------------------
+
+    def _shopping_lists_response(self, _recorded: RecordedRequest) -> StubResponse:
+        """`GET /shopping-lists/` -- active lists only.
+
+        The stub filters by `is_active` rather than serving a fixed list, because
+        the backend does: a soft-deleted list is simply absent here. A stub that
+        ignored it would let a page showing an archived list as active pass.
+        """
+        return StubResponse(
+            200, [row for row in self.shopping_lists if row.get("is_active", True)]
+        )
+
+    def _archived_shopping_lists_response(
+        self, _recorded: RecordedRequest
+    ) -> StubResponse:
+        """`GET /shopping-lists/inactive/` -- the soft-deleted ones."""
+        return StubResponse(
+            200, [row for row in self.shopping_lists if not row.get("is_active", True)]
+        )
+
+    def _find_shopping_list(self, list_id: str) -> dict | None:
+        return next(
+            (row for row in self.shopping_lists if row.get("id") == list_id), None
+        )
+
+    def _shopping_list_detail_response(self, recorded: RecordedRequest) -> StubResponse:
+        list_id = recorded.path.removeprefix("/purchases/shopping-lists/").removesuffix(
+            "/"
+        )
+        row = self._find_shopping_list(list_id)
+        # 404 for "missing" and "not yours" alike, which is what the backend
+        # answers and what the BFF is not entitled to distinguish.
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        return StubResponse(200, row)
+
+    def _create_shopping_list_response(self, recorded: RecordedRequest) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            return StubResponse(400, {"name": ["This field may not be blank."]})
+        if payload.get("priority") not in (None, "high", "medium", "low"):
+            return StubResponse(400, {"priority": ['"x" is not a valid choice.']})
+        row = {
+            # A real UUID: the BFF's `ShoppingListId` validates as one, so an
+            # incrementing string here would be rejected inside the mapper and
+            # read as a broken feature rather than as a bad fixture.
+            "id": str(uuid4()),
+            "name": name,
+            "priority": payload.get("priority", "medium"),
+            "status": "pending",
+            "is_active": True,
+            "created_at": self.stub_now,
+            "completed_at": None,
+            "items": [],
+            "tags": [],
+        }
+        self.shopping_lists.append(row)
+        return StubResponse(201, row)
+
+    def _add_shopping_list_item_response(
+        self, recorded: RecordedRequest
+    ) -> StubResponse:
+        list_id = recorded.path.removeprefix("/purchases/shopping-lists/").removesuffix(
+            "/add-item/"
+        )
+        row = self._find_shopping_list(list_id)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            return StubResponse(400, {"name": ["This field may not be blank."]})
+        quantity = payload.get("quantity", 1)
+        if not isinstance(quantity, int) or quantity < 1:
+            # `AddShoppingListItemSerializer` declares `min_value=1`.
+            return StubResponse(
+                400, {"quantity": ["Ensure this value is greater than or equal to 1."]}
+            )
+        row["items"].append(
+            {
+                "id": str(uuid4()),
+                "name": name,
+                "quantity": quantity,
+                "details": payload.get("details") or None,
+                "status": "pending",
+                "tags": [],
+            }
+        )
+        # 201 with the whole aggregate, which is the only place the new item's id
+        # appears -- there is no item-collection endpoint for shopping lists.
+        return StubResponse(201, row)
+
+    def _mark_shopping_list_item_response(
+        self, recorded: RecordedRequest
+    ) -> StubResponse:
+        segments = recorded.path.strip("/").split("/")
+        # purchases/shopping-lists/<list>/items/<item>/mark-purchased
+        list_id, item_id = segments[2], segments[4]
+        row = self._find_shopping_list(list_id)
+        if row is None:
+            return StubResponse(404, {"detail": "Not found."})
+        item = next((i for i in row["items"] if i.get("id") == item_id), None)
+        # The nesting is pinned server-side: an item from another list of the
+        # caller's own is refused rather than mutated.
+        if item is None:
+            return StubResponse(404, {"detail": "Shopping list item not found."})
+        item["status"] = "purchased"
+        self._refresh_list_status(row)
+        return StubResponse(200, row)
+
+    def _refresh_list_status(self, row: dict) -> None:
+        """Recompute a list's `status` and `completed_at`, as the backend does.
+
+        The empty-list rule matters and is easy to get wrong: a list with no
+        items is **never** completed, so a freshly created list cannot read as
+        finished.
+        """
+        items = row.get("items") or []
+        completed = bool(items) and all(i.get("status") == "purchased" for i in items)
+        row["status"] = "purchased" if completed else "pending"
+        row["completed_at"] = self.stub_now if completed else None
+
+    def _wishlist_response(self, _recorded: RecordedRequest) -> StubResponse:
+        """`GET /wishlist/` -- get-or-create, 200 either way.
+
+        Never 404 and never a 201-that-is-a-create: the backend routes this to
+        `GetOrCreateWishlist`, and the BFF has no separate create call.
+        """
+        if self.wishlist is None:
+            self.wishlist = {
+                "id": str(uuid4()),
+                "name": "My Wishlist",
+                "status": "pending",
+                "is_active": True,
+                "created_at": self.stub_now,
+                "completed_at": None,
+                "items": [],
+            }
+        return StubResponse(200, self.wishlist)
+
+    def _update_wishlist_response(self, recorded: RecordedRequest) -> StubResponse:
+        if self.wishlist is None:
+            return self._wishlist_response(recorded)
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        if "name" in payload:
+            self.wishlist["name"] = (
+                str(payload["name"]).strip() or self.wishlist["name"]
+            )
+        return StubResponse(200, self.wishlist)
+
+    def _add_wishlist_item_response(self, recorded: RecordedRequest) -> StubResponse:
+        if self.wishlist is None:
+            self._wishlist_response(recorded)
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            return StubResponse(400, {"name": ["This field may not be blank."]})
+        price = payload.get("estimated_price")
+        if price is not None:
+            try:
+                if float(price) < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return StubResponse(
+                    400, {"estimated_price": ["Ensure this value is greater than 0."]}
+                )
+        self.wishlist["items"].append(
+            {
+                "id": str(uuid4()),
+                "name": name,
+                "link": payload.get("link") or None,
+                "image_link": payload.get("image_link") or None,
+                "description": payload.get("description") or None,
+                # Rendered as a string, because DRF's COERCE_DECIMAL_TO_STRING is
+                # on by default and the BFF's schema types it as one.
+                "estimated_price": None if price is None else f"{float(price):.2f}",
+                "priority": payload.get("priority", "wanted"),
+                "status": "pending",
+                "tags": [],
+            }
+        )
+        return StubResponse(201, self.wishlist)
+
+    def _mark_wishlist_item_response(self, recorded: RecordedRequest) -> StubResponse:
+        if self.wishlist is None:
+            return StubResponse(404, {"detail": "Not found."})
+        item_id = recorded.path.strip("/").split("/")[3]
+        item = next((i for i in self.wishlist["items"] if i.get("id") == item_id), None)
+        if item is None:
+            return StubResponse(404, {"detail": "Wishlist item not found."})
+        item["status"] = "purchased"
+        items = self.wishlist["items"]
+        completed = bool(items) and all(i.get("status") == "purchased" for i in items)
+        self.wishlist["status"] = "purchased" if completed else "pending"
+        self.wishlist["completed_at"] = self.stub_now if completed else None
+        return StubResponse(200, self.wishlist)
+
+    def _tags_response(self, _recorded: RecordedRequest) -> StubResponse:
+        return StubResponse(200, list(self.purchases_tags))
+
+    def _create_tag_response(self, recorded: RecordedRequest) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        name = str(payload.get("name", "")).strip()
+        existing = next((t for t in self.purchases_tags if t["name"] == name), None)
+        if existing is not None:
+            # Idempotent by name, and the 200-vs-201 is the only place the
+            # difference is visible -- so the stub reproduces it.
+            return StubResponse(200, existing)
+        row = {"id": str(uuid4()), "name": name, "slug": name.lower()}
+        self.purchases_tags.append(row)
+        return StubResponse(201, row)
 
     def _item_response(self, recorded: RecordedRequest) -> StubResponse:
         transaction_id = recorded.path.removeprefix("/transactions/").removesuffix("/")
@@ -859,13 +1123,54 @@ class StubBackend:
                 # `<id>/add-task/`. `generate/` is one segment shorter and was
                 # registered by exact path above, so it never reaches here.
                 route = self._routes.get(("POST", "/tasks/daily-plans/<id>/add-task/"))
+        if (
+            route is None
+            and path.startswith("/purchases/shopping-lists/")
+            and path.count("/") == 4
+        ):
+            # Reached only by fallback, so the exact collection routes
+            # registered above always win -- which is what keeps
+            # `/shopping-lists/inactive/` from being read as a list whose id
+            # happens to be the string "inactive".
+            route = self._routes.get(("*", "/purchases/shopping-lists/<id>/"))
+        if (
+            route is None
+            and path.startswith("/purchases/shopping-lists/")
+            and path.count("/") == 5
+            and path.endswith("/add-item/")
+        ):
+            route = self._routes.get(
+                ("POST", "/purchases/shopping-lists/<id>/add-item/")
+            )
+        if (
+            route is None
+            and path.startswith("/purchases/shopping-lists/")
+            and path.count("/") == 7
+            and path.endswith("/mark-purchased/")
+        ):
+            # The nested item action: `/shopping-lists/<list>/items/<item>/`.
+            route = self._routes.get(
+                (
+                    "POST",
+                    "/purchases/shopping-lists/<id>/items/<item_id>/mark-purchased/",
+                )
+            )
+        if (
+            route is None
+            and path.startswith("/purchases/wishlist/items/")
+            and path.count("/") == 6
+            and path.endswith("/mark-purchased/")
+        ):
+            route = self._routes.get(
+                ("POST", "/purchases/wishlist/items/<item_id>/mark-purchased/")
+            )
 
-            if route is None:
-                return StubResponse(404, {"detail": f"Unstubbed: {method} {path}"})
+        if route is None:
+            return StubResponse(404, {"detail": f"Unstubbed: {method} {path}"})
 
-            if callable(route):
-                return route(recorded)
-            return route
+        if callable(route):
+            return route(recorded)
+        return route
 
 
 class StubDRFServer:
