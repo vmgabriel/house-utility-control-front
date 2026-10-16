@@ -20,6 +20,7 @@ from src.identity.domain.exceptions import AuthenticationError, DomainException
 from src.shared.auth.csrf import CSRFTokenManager
 from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.http.drf_client import ServiceUnavailableError
+from src.shared.rate_limit import AUTH_RATE_LIMIT, limiter
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
@@ -31,8 +32,13 @@ def _csrf_ok() -> bool:
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
+@limiter.limit(AUTH_RATE_LIMIT)
 async def login() -> Response:
-    """Login page and handler."""
+    """Login page and handler.
+
+    Rate limited: this is the one unauthenticated route that checks a password,
+    so it is the natural target for credential stuffing.
+    """
     if request.method == "POST":
         email = request.form.get("email", "").strip()
         password = request.form.get("password", "")
