@@ -57,3 +57,15 @@ os.environ["NEXTCLOUD_UPLOAD_VIA_BFF"] = "false"
 os.environ["NEXTCLOUD_BASIC_AUTH"] = ""
 os.environ["NEXTCLOUD_BASE_URL"] = ""
 os.environ["NEXTCLOUD_DAV_PATH"] = ""
+
+# Rate limiting is on by default in production. The suite signs in dozens of
+# times from one address in a single process against one live server, so an
+# enforced 5/minute would fail the E2E suite for a reason unrelated to the code
+# under test. A test that wants the limiter opts back in with
+# `monkeypatch.setenv` and builds its own app.
+os.environ["RATELIMIT_ENABLED"] = "false"
+
+# JSON logging is a production deployment concern (docker-compose.prod.yml sets
+# `LOG_FORMAT=json`). The suite keeps the default text formatter so log capture
+# behaves normally.
+os.environ["LOG_FORMAT"] = "text"
