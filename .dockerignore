@@ -1,0 +1,29 @@
+# Keep the build context small and free of secrets. The Dockerfile COPYs
+# `src/`, `tests/`, `pyproject.toml`, `README.md`, and `.env.example`
+# explicitly, so anything else here is dead weight or a leak.
+#
+# The negated `.env.example` matters: the `.env.*` pattern would otherwise
+# swallow it, and the Dockerfile depends on copying it (see the comment there).
+
+# Version control
+.git
+
+# Environment & secrets -- the real .env never enters the image, but the
+# template does.
+.env
+.env.*
+!.env.example
+
+# Python bytecode & packaging
+__pycache__
+*.py[cod]
+build/
+*.egg-info
+
+# Tooling caches
+.pytest_cache
+.ruff_cache
+
+# Editors & OS
+.DS_Store
+Thumbs.db

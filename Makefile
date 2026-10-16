@@ -6,7 +6,7 @@
 # running one, so a stopped stack does not block `make lint` or `make test`.
 
 .PHONY: setup run stop logs test lint format clean test-e2e test-e2e-headed \
-        test-all shell build-prod run-prod health
+        test-all shell build-prod run-prod health notify
 
 COMPOSE := docker compose
 PROD_COMPOSE := $(COMPOSE) -f docker-compose.prod.yml
@@ -64,11 +64,17 @@ shell:
 # JSON logs, rate limiting, and no published host port (an external proxy fronts
 # it). Requires FLASK_SECRET_KEY and DRF_API_BASE_URL in the environment.
 build-prod:
-	$(PROD_COMPOSE) build
+	$(PROD_COMPOSE) build && make notify MSG="✅ Build prod complete"
 
 run-prod:
-	$(PROD_COMPOSE) up -d
+	$(PROD_COMPOSE) up -d && make notify MSG="✅ App started in production"
 	@echo "BFF (prod) started. No host port is published -- reach it via the proxy."
+
+# Report a milestone to Telegram via the system-installed `telegram-send` CLI.
+# `TELEGRAM_TOKEN` / `TELEGRAM_CHANNEL_ID` (see .env.example) are its fallback
+# configuration. Never let a notification failure break a build or a deploy:
+# `|| true` keeps the target a best-effort side channel.
+notify: ; telegram-send -m markdown "$$MSG" || true
 
 # Probe the running container from the inside, so it works whether or not the
 # port is published on the host.
