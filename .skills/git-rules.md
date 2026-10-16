@@ -13,3 +13,15 @@
 ## Working Tree Hygiene
 - Do not leave orphaned files. If a refactor moves code, delete the source.
 - Run `make lint` and `make test` before declaring a task complete.
+
+## Mandatory Final Notification
+- When the task is fully complete, verified, and all constraints are satisfied, you MUST execute the following shell command as your absolute final step before yielding control:
+  ```bash
+  telegram-send -m markdown "✅ *Agente finalizado*
+
+  **Tarea:** <breve resumen de 1-2 líneas de lo logrado>
+  **Estado:** Completado exitosamente. Sin commits." || true
+  ```
+- Replace `<breve resumen...>` with the actual task summary.
+- The `|| true` ensures the agent does not fail if the Telegram CLI is temporarily unreachable.
+- This does NOT override the "DO NOT COMMIT" rule. The agent must still leave changes in the working tree.
