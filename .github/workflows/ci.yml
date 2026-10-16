@@ -1,0 +1,64 @@
+name: CI
+
+# Gate every change to the long-lived branches. `master` is the current default
+# branch; `main` is kept so a rename does not silently stop the pipeline.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# The Makefile targets run everything inside the `bff` container, so CI only has
+# to provide Docker -- never a host Python. That keeps CI and the image from
+# disagreeing about the environment the suite ran in.
+jobs:
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image
+        run: docker compose build
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image
+        run: docker compose build
+      - name: Ensure the DRF network exists
+        # `bff` joins the DRF project's external network. Without it
+        # `docker compose run` refuses to start a container at all. The suite
+        # never reaches the backend (respx / the stub), but Compose still
+        # requires the network to exist.
+        run: docker network create budget-tracker_default || true
+      - name: Run Ruff and Black
+        run: make lint
+
+  test:
+    name: Unit + integration
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image
+        run: docker compose build
+      - name: Ensure the DRF network exists
+        run: docker network create budget-tracker_default || true
+      - name: Run unit and integration tests
+        run: make test
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Docker image
+        run: docker compose build
+      - name: Ensure the DRF network exists
+        run: docker network create budget-tracker_default || true
+      - name: Run Playwright end-to-end tests
+        run: make test-e2e
