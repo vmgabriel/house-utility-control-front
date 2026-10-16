@@ -59,6 +59,34 @@ Without it, `docker compose up` fails immediately with a clear error, which is b
 
 `FLASK_DEBUG=true` relaxes two things for local work: the JWT cookies drop `Secure` (there is no HTTPS on `localhost`), and Flask's debug reloader comes up. Both must be off in production — a `Secure` flag ignored over plain HTTP is the difference between a protected token and a leaked one.
 
+## 🚀 Production Deployment
+
+Production is the same image, run by **Gunicorn** instead of Flask's development server:
+
+```bash
+FLASK_SECRET_KEY=... DRF_API_BASE_URL=http://web:8000/api/v1 \
+    make build-prod      # build the hardened image
+FLASK_SECRET_KEY=... DRF_API_BASE_URL=http://web:8000/api/v1 \
+    make run-prod        # start it, detached
+make health              # curl /healthz inside the container
+```
+
+`docker-compose.prod.yml` is the deployment shape. It is deliberately not a copy of the dev file:
+
+- **No published ports.** The external reverse proxy terminates TLS and forwards to `bff:5001` over the container network; `expose` documents the port without opening it on the host. Caddy's `Caddyfile` from the dev stack is the reference for the proxy half.
+- **`FLASK_DEBUG=0`** and a **required `FLASK_SECRET_KEY`**. There is no default signing key: a stray one in production is a silent session-forgery hole, so the container refuses to start without it.
+- **`LOG_FORMAT=json`** emits one JSON object per line (`timestamp`, `level`, `logger`, `message`, `request_id`) for the log collector. Every request carries an `X-Request-ID`, minted or propagated by `src/shared/logging.py` and echoed on the response, so a log line can be tied back to a request.
+- **Rate limiting** is on (`RATELIMIT_ENABLED=1`): `/auth/login` and `/users/register` accept `5 per minute` per client address. Storage is in-process; a multi-instance deployment must point `storage_uri` at a shared backend.
+- **`restart: unless-stopped`** and a **`/healthz` healthcheck** (`curl --fail`) that never touches the backend, so a dead BFF is restarted rather than left in rotation.
+
+CI (`.github/workflows/ci.yml`) gates every push and pull request to `main`/`master` with four jobs — image build, `make lint`, `make test`, and `make test-e2e` — all running inside the same container developers use.
+
+### Operational notes
+
+- **Rate limiting is disabled for the test suite** (`RATELIMIT_ENABLED=false` in `tests/conftest.py`), because the E2E suite signs in from one address far more often than the limit allows.
+- **The container runs as non-root** (`appuser`, uid 10001). The Hatch environment is built under that user's `HOME` so `hatch run gunicorn` finds it at startup.
+- **`FLASK_DEBUG` and `LOG_FORMAT` are read at `create_app()` time**, so changing them needs a restart, not a rebuild.
+
 ## 🧪 Testing
 
 ```bash

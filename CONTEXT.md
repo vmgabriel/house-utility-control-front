@@ -2,7 +2,7 @@
 
 ## Active Focus
 - Current Module: `purchases` (Shopping Lists & Wishlist BFF integration complete)
-- Current Phase: Production Readiness (Phase 3: Gunicorn, JSON Logging, Rate Limiting, CI/CD) — **in progress**, pending developer review.
+- Current Phase: Production Readiness (Phase 3: Gunicorn, JSON Logging, Rate Limiting, CI/CD) — **implemented**, pending developer review. No commits made.
 
 ## Recent Architectural Decisions
 - **Modular Monolith structure**: `src/{budget,identity,profile,tasks,purchases,rentals}/` with `src/shared/` kernel. Each context owns its 4 layers; no cross-context imports (enforced by `tests/integration/test_context_boundaries.py` via AST parsing).
@@ -16,12 +16,13 @@
 - **E2E hermeticity**: `tests/e2e/drf_stub.py` runs an in-thread fake DRF server on ephemeral port. `page.route()` deliberately NOT used (browser never calls DRF directly — Flask does via `httpx`). Stub asserts on actual `Authorization` header and payload.
 - **CI (`.github/workflows/ci.yml`)**: Gates every PR/push to `main` with three jobs: `lint`, `test` (unit+integration), `e2e` (Playwright headless).
 
-## Phase 3 Deliverables (in progress)
+## Phase 3 Deliverables (implemented)
 - Gunicorn replacing Flask dev server (`4 workers × 2 threads`, `gthread` worker class).
-- JSON logging wired into `create_app()` with request-id correlation.
-- Rate limiting on auth endpoints (`/auth/login`, `/users/register`) via Flask-Limiter.
-- `docker-compose.prod.yml` with `restart: unless-stopped`, no direct port exposure (Caddy handles TLS).
-- CI pipeline running lint, full test suite, and Docker image build on every PR.
+- JSON logging wired into `create_app()` with request-id correlation (`src/shared/logging.py`).
+- Rate limiting on auth endpoints (`/auth/login`, `/users/register`) via Flask-Limiter (`src/shared/rate_limit.py`); disabled in tests.
+- `docker-compose.prod.yml` with `restart: unless-stopped`, no direct port exposure (external proxy handles TLS), required `FLASK_SECRET_KEY`, and a `/healthz` healthcheck.
+- CI pipeline (`.github/workflows/ci.yml`) running image build, lint, full test suite, and E2E on every push/PR.
+- Non-root container user (`appuser`, uid 10001).
 
 ## Operational Notes
 - `FLASK_DEBUG=true` relaxes two things: JWT cookies drop `Secure` flag (no HTTPS on localhost), and Flask reloader activates. Both MUST be off in production.

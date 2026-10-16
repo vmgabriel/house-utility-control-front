@@ -1,0 +1,62 @@
+# docker-compose.prod.yml
+#
+# Production overlay. Deliberately does NOT publish a host port: an external
+# reverse proxy (Caddy, nginx, Traefik, ...) terminates TLS and is the only thing
+# reachable from outside. It forwards to this service on the container network at
+# `bff:5001`, so `expose` documents the port without opening it.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Required environment (set in the shell or a .env file next to this file):
+#   FLASK_SECRET_KEY   session/CSRF signing key -- NO default, refuses to start
+#   DRF_API_BASE_URL   e.g. http://web:8000/api/v1
+#
+# `make build-prod` / `make run-prod` wrap the two commands you need.
+services:
+  # The Flask BFF, served by Gunicorn.
+  bff:
+    build: .
+    image: home-utility-front-bff:prod
+    environment:
+      - FLASK_APP=src.interfaces.web.app
+      # Debug is off. This is not cosmetic: it drops the JWT `Secure` flag and
+      # turns on the development reloader. See CONTEXT.md, "Operational Notes".
+      - FLASK_DEBUG=0
+      # No fallback on purpose. A default signing key in production is a
+      # silent session-forgery hole, so refuse to start without a real one.
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:?set FLASK_SECRET_KEY in the environment}
+      - DRF_API_BASE_URL=${DRF_API_BASE_URL:?set DRF_API_BASE_URL in the environment}
+      # Structured logs (one JSON object per line) for the log collector.
+      - LOG_FORMAT=json
+      - LOG_LEVEL=INFO
+      # Rate limiting on the public auth endpoints.
+      - RATELIMIT_ENABLED=1
+      # Uploads go straight from the browser to the reverse proxy, which injects
+      # the Nextcloud credential. The BFF-local fallback must never be enabled
+      # in production (AGENTS.md, rule 6).
+      - NEXTCLOUD_UPLOAD_PATH=${NEXTCLOUD_UPLOAD_PATH:-/nextcloud-dav/rentals}
+      - NEXTCLOUD_UPLOAD_VIA_BFF=false
+    # Documented, not published. Remove this line and nothing changes; it exists
+    # so the port is discoverable without publishing it on the host.
+    expose:
+      - "5001"
+    healthcheck:
+      # Probes the app on the container-internal port. `curl --fail` makes a
+      # non-2xx (or a hung process) a failing check, so Compose restarts it.
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:5001/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    # Joins the DRF backend's Compose network so `web` resolves by service name,
+    # exactly as in docker-compose.yml. Requires that network to exist:
+    #     docker compose -p budget-tracker up -d    # in the DRF project
+    networks:
+      - default
+      - drf
+
+networks:
+  drf:
+    external: true
+    name: budget-tracker_default

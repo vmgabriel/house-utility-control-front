@@ -6,9 +6,10 @@
 # running one, so a stopped stack does not block `make lint` or `make test`.
 
 .PHONY: setup run stop logs test lint format clean test-e2e test-e2e-headed \
-        test-all shell
+        test-all shell build-prod run-prod health
 
 COMPOSE := docker compose
+PROD_COMPOSE := $(COMPOSE) -f docker-compose.prod.yml
 
 setup:
 	$(COMPOSE) build
@@ -57,6 +58,22 @@ format:
 
 shell:
 	$(COMPOSE) exec bff bash
+
+# --- Production -----------------------------------------------------------
+# Build/run the hardened stack from docker-compose.prod.yml: non-root Gunicorn,
+# JSON logs, rate limiting, and no published host port (an external proxy fronts
+# it). Requires FLASK_SECRET_KEY and DRF_API_BASE_URL in the environment.
+build-prod:
+	$(PROD_COMPOSE) build
+
+run-prod:
+	$(PROD_COMPOSE) up -d
+	@echo "BFF (prod) started. No host port is published -- reach it via the proxy."
+
+# Probe the running container from the inside, so it works whether or not the
+# port is published on the host.
+health:
+	$(COMPOSE) exec bff curl --fail --silent http://localhost:5001/healthz && echo
 
 clean:
 	$(COMPOSE) down --volumes

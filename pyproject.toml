@@ -17,6 +17,13 @@ dependencies = [
     "pydantic>=2.5.0",
     "python-dotenv>=1.0.0",
     "itsdangerous>=2.1.2",
+    # Production WSGI server. The `gthread` worker runs the `async def` views
+    # the blueprints declare, which the Flask dev server is not meant to do
+    # under load.
+    "gunicorn>=21.2.0",
+    # Limits the public, unauthenticated auth endpoints (see
+    # src/shared/rate_limit.py).
+    "Flask-Limiter>=3.5.0",
 ]
 
 [project.optional-dependencies]
