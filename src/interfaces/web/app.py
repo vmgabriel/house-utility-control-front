@@ -65,6 +65,8 @@ from src.shared.auth.jwt_cookie_manager import CookieConfig, JWTCookieManager
 from src.shared.http.auto_refresh import AutoRefreshingRepository
 from src.shared.http.drf_client import DRFAPIClient, ServiceUnavailableError
 from src.shared.infrastructure.clock import SystemClock
+from src.shared.logging import RequestIdMiddleware, configure_logging
+from src.shared.rate_limit import limiter
 from src.tasks.application.wiring import build_tasks_use_cases
 from src.tasks.infrastructure.drf_client import DrfTasksClient
 from src.tasks.interfaces.web.routes import tasks_bp
@@ -86,6 +88,10 @@ TRUTHY_VALUES = ("true", "1", "yes", "on")
 
 
 def create_app() -> Flask:
+    # JSON logs when LOG_FORMAT=json; a no-op otherwise. Configured before the
+    # app exists so even an import-time failure is formatted consistently.
+    configure_logging()
+
     app = Flask(__name__, template_folder="templates")
     # Every bounded context keeps its Jinja2 templates inside its own package, so
     # each directory is registered on the search path. `profile` and `users` are
@@ -116,6 +122,20 @@ def create_app() -> Flask:
 
     debug = os.getenv("FLASK_DEBUG", "false").lower() in TRUTHY_VALUES
     app.debug = debug
+
+    # Correlation id for every request, minted or propagated by the outer WSGI
+    # middleware and echoed back on the response. Bound to a contextvar so every
+    # log record emitted while handling the request carries it.
+    app.wsgi_app = RequestIdMiddleware(app.wsgi_app)
+
+    # Rate limiting is on in production and off under the test suite, which
+    # signs in from one address far more than the limit allows. The limit
+    # itself is declared on the routes (see src/shared/rate_limit.py).
+    app.config["RATELIMIT_ENABLED"] = (
+        os.getenv("RATELIMIT_ENABLED", "true").lower() in TRUTHY_VALUES
+    )
+    limiter.init_app(app)
+    app.limiter = limiter
 
     # Initialize infrastructure
     api_client = DRFAPIClient(base_url=app.config["DRF_API_BASE_URL"])
@@ -400,8 +420,12 @@ def create_app() -> Flask:
 
     @app.route("/healthz")
     def healthz():
-        """Liveness probe that never touches the backend."""
-        return {"status": "ok", "debug": app.debug}
+        """Liveness probe that never touches the backend.
+
+        Public and dependency-free by design: the container healthcheck runs it
+        before any backend is reachable, so it must not perform a DRF call.
+        """
+        return {"status": "ok"}
 
     return app
 
