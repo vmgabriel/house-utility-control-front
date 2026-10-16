@@ -16,6 +16,7 @@ from flask import (
 from src.shared.auth.csrf import CSRFTokenManager
 from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.http.drf_client import ServiceUnavailableError
+from src.shared.rate_limit import AUTH_RATE_LIMIT, limiter
 from src.users.domain.entities import UserPlan
 from src.users.interfaces.viewmodels import AdminUserViewModel
 
@@ -37,7 +38,12 @@ def requires_staff(f):
 
 
 @users_bp.route("/register", methods=["GET", "POST"])
+@limiter.limit(AUTH_RATE_LIMIT)
 async def register():
+    """Registration page and handler.
+
+    Rate limited to stop automated account creation from a single address.
+    """
     csrf_manager: CSRFTokenManager = current_app.csrf_manager
 
     if request.method == "POST":
