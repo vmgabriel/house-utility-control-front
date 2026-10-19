@@ -11,6 +11,10 @@ from typing import NewType
 
 TransactionId = NewType("TransactionId", str)
 
+#: Identity of a persisted funding account. A `NewType` like `TransactionId`,
+#: so a raw string from the wire has to be named before it can reach an entity.
+AccountId = NewType("AccountId", str)
+
 #: Declared here rather than imported from `src.identity` because a context must
 #: not import another (AGENTS.md, constraint 1). `rentals` likewise defines its
 #: own `UserId` in `rentals/domain/value_objects.py`, so this is the established
@@ -30,6 +34,45 @@ class TransactionType(str, Enum):
     EXPENSE = "expense"
     INVESTMENT = "investment"
     SAVINGS = "savings"
+
+
+class AccountType(str, Enum):
+    """Kinds of funding source a transaction can be paid from.
+
+    Mirrors the backend's ``AccountType`` wire values exactly, so a member
+    serialises straight into the create-account payload.
+    """
+
+    CREDIT_CARD = "credit_card"
+    DEBIT = "debit"
+    CASH = "cash"
+    SAVINGS = "savings"
+
+    @property
+    def label(self) -> str:
+        """Human-readable label for templates ("Credit card", ...)."""
+        return self.value.replace("_", " ").capitalize()
+
+
+class AnalyticsPeriod(str, Enum):
+    """Granularity of a transaction analytics aggregation."""
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
+class AnalyticsGroupBy(str, Enum):
+    """How analytics rows are grouped.
+
+    ``TYPE`` produces one row per period with an income/expense/investment/
+    savings breakdown; ``CATEGORY`` produces one row per expense category with
+    a single total. The two are mutually exclusive, which is why the mapper
+    branches on this rather than on the presence of fields.
+    """
+
+    TYPE = "type"
+    CATEGORY = "category"
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,6 +13,7 @@ from flask import (
     url_for,
 )
 
+from src.budget.application.use_cases.accounts import GetFundingAccountsUseCase
 from src.budget.application.use_cases.transactions import (
     CreateTransactionUseCase,
     DeleteTransactionUseCase,
@@ -21,12 +22,16 @@ from src.budget.application.use_cases.transactions import (
 from src.budget.domain.entities import DEFAULT_CATEGORY, Transaction
 from src.budget.domain.exceptions import DomainException
 from src.budget.domain.value_objects import (
+    AccountId,
     Money,
     TransactionId,
     TransactionType,
     UserId,
 )
-from src.budget.interfaces.viewmodels import TransactionViewModel
+from src.budget.interfaces.viewmodels import (
+    FundingAccountViewModel,
+    TransactionViewModel,
+)
 from src.shared.auth.csrf import CSRFTokenManager
 from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.http.drf_client import ServiceUnavailableError
@@ -84,11 +89,30 @@ async def index():
         flash("Transactions could not be loaded right now.", "error")
 
     viewmodels = [TransactionViewModel.from_domain(tx) for tx in transactions]
+
+    # Active funding accounts for the optional selector on the create form.
+    # Best-effort on purpose: the selector is optional, so an unreachable or
+    # unhappy accounts endpoint must not stop the transactions page rendering.
+    # A blank/absent account is still a valid transaction.
+    accounts_use_case: GetFundingAccountsUseCase = (
+        current_app.get_funding_accounts_use_case
+    )
+    try:
+        accounts = await accounts_use_case.execute(access_token)
+    except Exception:
+        accounts = []
+    account_options = [
+        FundingAccountViewModel.from_domain(account)
+        for account in accounts
+        if account.is_active
+    ]
+
     return render_template(
         "transactions/index.html",
         transactions=viewmodels,
         page=page,
         category_suggestions=CATEGORY_SUGGESTIONS,
+        accounts=account_options,
     )
 
 
@@ -112,6 +136,10 @@ async def create():
     # default rather than letting the API reject the request with a 400.
     category = request.form.get("category", "").strip() or DEFAULT_CATEGORY
     date_str = request.form.get("date") or date.today().isoformat()
+    # Optional: the selector has an empty option for "no funding account", and
+    # the create serializer treats the field as optional, so an unset value
+    # must be omitted rather than sent as an empty string.
+    account_id_raw = request.form.get("account_id", "").strip()
 
     try:
         transaction = Transaction(
@@ -123,6 +151,7 @@ async def create():
             description=description,
             date=date.fromisoformat(date_str),
             category=category,
+            account_id=AccountId(account_id_raw) if account_id_raw else None,
         )
     except (InvalidOperation, ValueError) as exc:
         # Invalid Decimal, unknown transaction type, malformed date, or a

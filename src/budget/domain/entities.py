@@ -6,8 +6,13 @@ bounded context, or any third-party framework.
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 
 from .value_objects import (
+    AccountId,
+    AccountType,
+    AnalyticsGroupBy,
+    AnalyticsPeriod,
     Money,
     SignedMoney,
     TransactionId,
@@ -33,6 +38,10 @@ class Transaction:
     category: str = DEFAULT_CATEGORY
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    #: Optional link to the funding account the money came from. `None` means
+    #: the transaction is unlinked; the backend rejects `null` on update, so a
+    #: cleared field must be omitted rather than sent empty.
+    account_id: AccountId | None = None
 
     def validate(self, current_date: date) -> None:
         """Validate transaction rules."""
@@ -78,3 +87,47 @@ class DashboardOverview:
     today: DashboardSummary | None
     this_week: DashboardSummary | None
     this_month: DashboardSummary | None
+
+
+@dataclass(slots=True)
+class FundingAccount:
+    """A funding source a transaction can be linked to.
+
+    An entity rather than a value object: it has an identity (`id`) that
+    survives a rename, and the backend owns its lifecycle. `id` is `None` for
+    an account that has not been created yet.
+    """
+
+    id: AccountId | None
+    name: str
+    account_type: AccountType
+    is_active: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsRow:
+    """One flat, chart-ready analytics row.
+
+    The backend serialises two mutually exclusive row shapes, so the entity
+    models both rather than splitting into a union: a ``type`` row carries the
+    four type amounts (zero-filled when a bucket had no activity of a type),
+    and a ``category`` row carries a single ``total``. The unused side stays
+    `None`, which keeps "the backend did not send this" distinguishable from
+    "the backend sent zero".
+    """
+
+    label: str
+    income: Decimal | None = None
+    expense: Decimal | None = None
+    investment: Decimal | None = None
+    savings: Decimal | None = None
+    total: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionAnalytics:
+    """A bounded, chart-ready aggregation result."""
+
+    period: AnalyticsPeriod
+    group_by: AnalyticsGroupBy
+    rows: list[AnalyticsRow]

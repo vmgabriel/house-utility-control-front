@@ -16,18 +16,27 @@ from jinja2 import FileSystemLoader
 from werkzeug.exceptions import ServiceUnavailable
 
 from src.budget.application.use_cases import (
+    CreateFundingAccountUseCase,
     CreateTransactionUseCase,
     DeleteTransactionUseCase,
     FetchTransactionsUseCase,
     GetDashboardOverviewUseCase,
+    GetFundingAccountsUseCase,
+    GetTransactionAnalyticsUseCase,
     GetTransactionUseCase,
     UpdateTransactionUseCase,
 )
 from src.budget.infrastructure.repositories import (
+    DRFAnalyticsRepository,
     DRFDashboardRepository,
+    DRFFundingAccountRepository,
     DRFTransactionRepository,
 )
-from src.budget.interfaces.blueprints import dashboard_bp, transactions_bp
+from src.budget.interfaces.blueprints import (
+    budget_bp,
+    dashboard_bp,
+    transactions_bp,
+)
 from src.identity.application.use_cases import (
     AuthenticateUserUseCase,
     LogoutUserUseCase,
@@ -142,6 +151,8 @@ def create_app() -> Flask:
     auth_repo = DRFAuthRepository(api_client)
     transaction_repo = DRFTransactionRepository(api_client)
     dashboard_repo = DRFDashboardRepository(api_client)
+    funding_account_repo = DRFFundingAccountRepository(api_client)
+    analytics_repo = DRFAnalyticsRepository(api_client)
     profile_repo = DRFProfileRepository(api_client)
     user_repo = DRFUserRepository(api_client)
     rentals_client = DrfRentalsClient(api_client)
@@ -232,6 +243,8 @@ def create_app() -> Flask:
 
     safe_transaction_repo = refreshing(transaction_repo)
     safe_dashboard_repo = refreshing(dashboard_repo)
+    safe_funding_account_repo = refreshing(funding_account_repo)
+    safe_analytics_repo = refreshing(analytics_repo)
     safe_profile_repo = refreshing(profile_repo)
     safe_user_repo = refreshing(user_repo)
     # Rentals goes through the same proxy. Its adapter methods take the access
@@ -270,6 +283,15 @@ def create_app() -> Flask:
     )
     app.overview_use_case = GetDashboardOverviewUseCase(
         dashboard_repository=safe_dashboard_repo
+    )
+    app.get_funding_accounts_use_case = GetFundingAccountsUseCase(
+        funding_account_repository=safe_funding_account_repo
+    )
+    app.create_funding_account_use_case = CreateFundingAccountUseCase(
+        funding_account_repository=safe_funding_account_repo
+    )
+    app.get_transaction_analytics_use_case = GetTransactionAnalyticsUseCase(
+        analytics_repository=safe_analytics_repo
     )
     app.get_profile_use_case = GetProfileUseCase(repository=safe_profile_repo)
     app.update_profile_use_case = UpdateProfileUseCase(repository=safe_profile_repo)
@@ -400,6 +422,7 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(transactions_bp)
+    app.register_blueprint(budget_bp)
     app.register_blueprint(profile_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(rentals_bp)

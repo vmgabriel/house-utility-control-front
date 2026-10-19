@@ -1,9 +1,19 @@
 """Repository protocols (ports) for the budget context."""
 
+from datetime import date
 from typing import Protocol
 
-from .entities import DashboardOverview, Transaction
-from .value_objects import TransactionId
+from .entities import (
+    DashboardOverview,
+    FundingAccount,
+    Transaction,
+    TransactionAnalytics,
+)
+from .value_objects import (
+    AnalyticsGroupBy,
+    AnalyticsPeriod,
+    TransactionId,
+)
 
 
 class TransactionRepositoryPort(Protocol):
@@ -57,4 +67,33 @@ class DashboardRepositoryPort(Protocol):
 
     async def get_monthly_summary(self, access_token: str) -> list:
         """Get monthly summaries."""
+        ...
+
+
+class FundingAccountRepositoryPort(Protocol):
+    """Port for funding-account operations."""
+
+    async def list_accounts(self, access_token: str) -> list[FundingAccount]:
+        """List the caller's active funding accounts."""
+        ...
+
+    async def create_account(
+        self, access_token: str, account: FundingAccount
+    ) -> FundingAccount:
+        """Create a funding account and return the persisted result."""
+        ...
+
+
+class AnalyticsRepositoryPort(Protocol):
+    """Port for the bounded transaction-analytics aggregation."""
+
+    async def get_analytics(
+        self,
+        access_token: str,
+        start_date: date,
+        end_date: date,
+        group_by: AnalyticsGroupBy,
+        period: AnalyticsPeriod,
+    ) -> TransactionAnalytics:
+        """Aggregate a bounded date range into chart-ready rows."""
         ...

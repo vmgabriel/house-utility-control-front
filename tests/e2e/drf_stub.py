@@ -135,6 +135,33 @@ DEFAULT_OVERVIEW: dict = {
 #: An overview the backend sends when the user has no data at all.
 EMPTY_OVERVIEW: dict = {"today": None, "this_week": None, "this_month": None}
 
+#: Analytics rows the stubbed `group_by=type` and `group_by=category` endpoints
+#: serve. Two type buckets and three category slices: enough for a chart to have
+#: multiple bars and slices, so an assertion cannot pass on a single-point chart
+#: that would render even if the series mapping were wrong.
+DEFAULT_TYPE_ANALYTICS_ROWS: list[dict] = [
+    {
+        "label": "2026-08",
+        "income": "1000.00",
+        "expense": "400.00",
+        "investment": "50.00",
+        "savings": "100.00",
+    },
+    {
+        "label": "2026-09",
+        "income": "2000.00",
+        "expense": "600.00",
+        "investment": "0.00",
+        "savings": "250.00",
+    },
+]
+
+DEFAULT_CATEGORY_ANALYTICS_ROWS: list[dict] = [
+    {"label": "Food", "total": "320.00"},
+    {"label": "Housing", "total": "500.00"},
+    {"label": "Transport", "total": "120.00"},
+]
+
 #: The model name the health probe reports. Only ever shown in a tooltip, but
 #: pinned so an assertion on it would not be asserting on a random string.
 DEFAULT_LLM_MODEL: str = "qwen2.5:3b"
@@ -235,6 +262,12 @@ class StubBackend:
         self.wishlist: dict | None = None
         #: The shared, global tag catalogue. Not owner-scoped, as in the backend.
         self.purchases_tags: list[dict] = []
+        #: Backend-owned funding accounts; `/transactions/accounts/` serves the
+        #: active ones.
+        self.funding_accounts: list[dict] = []
+        #: Analytics rows per `group_by`. The response method wraps these with
+        #: the requested `period`/`group_by`, mirroring the backend.
+        self.analytics_rows: dict[str, list[dict]] = {}
         #: Whether the fake LLM provider answers. False makes the health probe,
         #: both task triggers, and daily-plan generation answer 503, which is how
         #: the real backend reports an unreachable provider.
@@ -275,6 +308,11 @@ class StubBackend:
             self.shopping_lists = []
             self.wishlist = None
             self.purchases_tags = []
+            self.funding_accounts = []
+            self.analytics_rows = {
+                "type": deepcopy(DEFAULT_TYPE_ANALYTICS_ROWS),
+                "category": deepcopy(DEFAULT_CATEGORY_ANALYTICS_ROWS),
+            }
             self.llm_available = True
             self.add_daily_plan_task_conflict = None
             self.transition_failure = None
@@ -357,6 +395,9 @@ class StubBackend:
             "date": payload.get("date", "2026-09-26"),
             "created_at": "2026-09-26T10:00:00Z",
             "updated_at": "2026-09-26T10:00:00Z",
+            # Flat, as the backend serialises them; null when unlinked.
+            "account_id": payload.get("account_id"),
+            "account_name": None,
         }
         self.transactions.append(created)
         return StubResponse(201, created)
@@ -376,6 +417,55 @@ class StubBackend:
 
     def _overview_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, dict(self.overview))
+
+    def _funding_accounts_response(self, _recorded: RecordedRequest) -> StubResponse:
+        """`GET /transactions/accounts/` -- active accounts only.
+
+        The backend filters to `is_active=true` server-side, so the stub does
+        too: a deactivated account must be absent here, not merely flagged.
+        """
+        active = [
+            deepcopy(row) for row in self.funding_accounts if row.get("is_active", True)
+        ]
+        return StubResponse(200, {"count": len(active), "results": active})
+
+    def _create_funding_account_response(
+        self, recorded: RecordedRequest
+    ) -> StubResponse:
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        name = str(payload.get("name", "")).strip()
+        account_type = payload.get("account_type")
+        if not name:
+            return StubResponse(400, {"name": ["This field may not be blank."]})
+        if account_type not in {"credit_card", "debit", "cash", "savings"}:
+            return StubResponse(400, {"account_type": ["Not a valid account type."]})
+        row = {
+            # A real UUID: `AccountId` is a string here, but the backend's own
+            # ids are UUIDs and a fixture that is not one would hide a mapper
+            # that assumes a UUID shape.
+            "id": str(uuid4()),
+            "name": name,
+            "account_type": account_type,
+            "is_active": True,
+            "created_at": self.stub_now,
+            "updated_at": self.stub_now,
+        }
+        self.funding_accounts.append(row)
+        return StubResponse(201, row)
+
+    def _analytics_response(self, recorded: RecordedRequest) -> StubResponse:
+        """`GET /transactions/analytics/` -- echo the requested shape."""
+        group_by = recorded.query.get("group_by", "type")
+        period = recorded.query.get("period", "monthly")
+        if group_by not in {"type", "category"}:
+            return StubResponse(400, {"detail": "Unknown group_by."})
+        if period not in {"daily", "weekly", "monthly"}:
+            return StubResponse(400, {"detail": "Unknown period."})
+        rows = self.analytics_rows.get(group_by, [])
+        return StubResponse(
+            200,
+            {"period": period, "group_by": group_by, "data": deepcopy(rows)},
+        )
 
     def _profile_response(self, _recorded: RecordedRequest) -> StubResponse:
         return StubResponse(200, dict(self.profile))
@@ -464,6 +554,11 @@ class StubBackend:
         self.on_call("GET", "/users/me/", lambda _r: self._me_response())
         self.on_call("GET", "/transactions/", self._list_response)
         self.on_call("POST", "/transactions/", self._create_response)
+        self.on_call("GET", "/transactions/accounts/", self._funding_accounts_response)
+        self.on_call(
+            "POST", "/transactions/accounts/", self._create_funding_account_response
+        )
+        self.on_call("GET", "/transactions/analytics/", self._analytics_response)
         self.on_call("GET", "/dashboard/overview/", self._overview_response)
         self.on_call("GET", "/profile/me/", self._profile_response)
         self.on_call("PATCH", "/profile/me/", self._update_profile_response)
@@ -1194,6 +1289,23 @@ class StubDRFServer:
 
     def seed_transactions(self, *transactions: dict) -> None:
         self.backend.seed_transactions(*transactions)
+
+    def seed_funding_accounts(self, *accounts: dict) -> None:
+        """Replace the funding accounts `/transactions/accounts/` serves.
+
+        Deep-copied because the create handler appends to the same list; a test
+        that seeded a module-level constant would have it mutated by its own
+        first create.
+        """
+        self.backend.funding_accounts = [deepcopy(account) for account in accounts]
+
+    def seed_analytics(self, group_by: str, *rows: dict) -> None:
+        """Replace the analytics rows for one `group_by` value."""
+        self.backend.analytics_rows[group_by] = [deepcopy(row) for row in rows]
+
+    @property
+    def funding_accounts(self) -> list[dict]:
+        return self.backend.funding_accounts
 
     def seed_users(self, *users: dict) -> None:
         self.backend.seed_users(*users)

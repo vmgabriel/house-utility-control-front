@@ -6,14 +6,28 @@ from decimal import Decimal
 import pytest
 
 from src.budget.domain.entities import (
+    AnalyticsRow,
     DashboardOverview,
     DashboardSummary,
+    FundingAccount,
     Transaction,
+    TransactionAnalytics,
 )
-from src.budget.domain.value_objects import Money, SignedMoney, TransactionType, UserId
+from src.budget.domain.value_objects import (
+    AccountId,
+    AccountType,
+    AnalyticsGroupBy,
+    AnalyticsPeriod,
+    Money,
+    SignedMoney,
+    TransactionType,
+    UserId,
+)
 from src.budget.interfaces.viewmodels import (
+    AnalyticsViewModel,
     DashboardOverviewViewModel,
     DashboardSummaryViewModel,
+    FundingAccountViewModel,
     TransactionViewModel,
 )
 
@@ -219,3 +233,145 @@ class TestDashboardOverviewViewModel:
         assert vm.today is None
         assert vm.this_week.period_display == "This Week"
         assert vm.this_month is None
+
+
+class TestFundingAccountViewModel:
+    def test_from_domain_maps_the_entity(self):
+        vm = FundingAccountViewModel.from_domain(
+            FundingAccount(
+                id=AccountId("acc-1"),
+                name="Visa Rewards",
+                account_type=AccountType.CREDIT_CARD,
+            )
+        )
+        assert vm.id == "acc-1"
+        assert vm.name == "Visa Rewards"
+        assert vm.account_type == "credit_card"
+        assert vm.account_type_display == "Credit card"
+        assert vm.is_active is True
+
+    def test_missing_id_becomes_empty_string(self):
+        vm = FundingAccountViewModel.from_domain(
+            FundingAccount(
+                id=None,
+                name="Wallet",
+                account_type=AccountType.CASH,
+            )
+        )
+        assert vm.id == ""
+        assert vm.account_type_display == "Cash"
+
+
+class TestAnalyticsViewModel:
+    @staticmethod
+    def type_result(period: AnalyticsPeriod = AnalyticsPeriod.MONTHLY):
+        return TransactionAnalytics(
+            period=period,
+            group_by=AnalyticsGroupBy.TYPE,
+            rows=[
+                AnalyticsRow(
+                    label="2026-08",
+                    income=Decimal("100.00"),
+                    expense=Decimal("40.00"),
+                    investment=Decimal("0.00"),
+                    savings=Decimal("5.00"),
+                ),
+                AnalyticsRow(
+                    label="2026-09",
+                    income=Decimal("200.00"),
+                    expense=Decimal("60.00"),
+                    investment=Decimal("10.00"),
+                    savings=Decimal("25.00"),
+                ),
+            ],
+        )
+
+    def test_type_result_becomes_four_series(self):
+        vm = AnalyticsViewModel.from_domain(self.type_result())
+
+        assert vm.period == "monthly"
+        assert vm.group_by == "type"
+        assert vm.labels == ["Aug 2026", "Sep 2026"]
+        assert [dataset["label"] for dataset in vm.datasets] == [
+            "Income",
+            "Expense",
+            "Investment",
+            "Savings",
+        ]
+        assert vm.datasets[0]["data"] == [100.0, 200.0]
+        assert vm.datasets[3]["data"] == [5.0, 25.0]
+        assert vm.is_empty is False
+
+    def test_to_dict_uses_the_camel_cased_fetch_shape(self):
+        payload = AnalyticsViewModel.from_domain(self.type_result()).to_dict()
+
+        assert set(payload) == {"period", "groupBy", "labels", "datasets", "isEmpty"}
+        assert payload["groupBy"] == "type"
+        assert payload["isEmpty"] is False
+
+    def test_category_result_becomes_one_slice_dataset(self):
+        result = TransactionAnalytics(
+            period=AnalyticsPeriod.MONTHLY,
+            group_by=AnalyticsGroupBy.CATEGORY,
+            rows=[
+                AnalyticsRow(label="Housing", total=Decimal("30.00")),
+                AnalyticsRow(label="Food", total=Decimal("10.00")),
+            ],
+        )
+        vm = AnalyticsViewModel.from_domain(result)
+
+        assert vm.group_by == "category"
+        assert vm.labels == ["Housing", "Food"]
+        assert len(vm.datasets) == 1
+        dataset = vm.datasets[0]
+        assert dataset["data"] == [30.0, 10.0]
+        assert len(dataset["backgroundColor"]) == 2
+
+    def test_empty_result_is_flagged(self):
+        result = TransactionAnalytics(
+            period=AnalyticsPeriod.MONTHLY,
+            group_by=AnalyticsGroupBy.TYPE,
+            rows=[],
+        )
+        vm = AnalyticsViewModel.from_domain(result)
+
+        assert vm.is_empty is True
+        assert vm.labels == []
+        assert [dataset["data"] for dataset in vm.datasets] == [[], [], [], []]
+
+    def test_labels_are_formatted_per_period(self):
+        for period, label, expected in (
+            (AnalyticsPeriod.DAILY, "2026-09-26", "Sep 26"),
+            (AnalyticsPeriod.WEEKLY, "2026-W39", "Week 39 2026"),
+            (AnalyticsPeriod.MONTHLY, "2026-09", "Sep 2026"),
+        ):
+            result = TransactionAnalytics(
+                period=period,
+                group_by=AnalyticsGroupBy.TYPE,
+                rows=[
+                    AnalyticsRow(
+                        label=label,
+                        income=Decimal("0.00"),
+                        expense=Decimal("0.00"),
+                        investment=Decimal("0.00"),
+                        savings=Decimal("0.00"),
+                    )
+                ],
+            )
+            assert AnalyticsViewModel.from_domain(result).labels == [expected]
+
+    def test_an_unparsable_label_passes_through(self):
+        result = TransactionAnalytics(
+            period=AnalyticsPeriod.MONTHLY,
+            group_by=AnalyticsGroupBy.TYPE,
+            rows=[
+                AnalyticsRow(
+                    label="Q3",
+                    income=Decimal("0.00"),
+                    expense=Decimal("0.00"),
+                    investment=Decimal("0.00"),
+                    savings=Decimal("0.00"),
+                )
+            ],
+        )
+        assert AnalyticsViewModel.from_domain(result).labels == ["Q3"]

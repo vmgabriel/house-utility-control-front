@@ -5,6 +5,8 @@ Each use case is a small, framework-free object exposing a single
 the concrete adapters live in the infrastructure layer.
 """
 
+from .accounts import CreateFundingAccountUseCase, GetFundingAccountsUseCase
+from .analytics import GetTransactionAnalyticsUseCase
 from .dashboard import (
     GetDashboardOverviewUseCase,
     GetDashboardSummariesUseCase,
@@ -25,4 +27,7 @@ __all__ = [
     "DeleteTransactionUseCase",
     "GetDashboardOverviewUseCase",
     "GetDashboardSummariesUseCase",
+    "GetFundingAccountsUseCase",
+    "CreateFundingAccountUseCase",
+    "GetTransactionAnalyticsUseCase",
 ]

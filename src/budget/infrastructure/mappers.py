@@ -5,11 +5,16 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from src.budget.domain.entities import (
+    AnalyticsRow,
     DashboardOverview,
     DashboardSummary,
+    FundingAccount,
     Transaction,
+    TransactionAnalytics,
 )
 from src.budget.domain.value_objects import (
+    AccountId,
+    AnalyticsGroupBy,
     Money,
     SignedMoney,
     TransactionId,
@@ -17,8 +22,10 @@ from src.budget.domain.value_objects import (
 )
 
 from .schemas import (
+    DRFAnalyticsResponse,
     DRFDashboardOverviewResponse,
     DRFDashboardSummaryResponse,
+    DRFFundingAccountResponse,
     DRFTransactionResponse,
 )
 
@@ -40,6 +47,8 @@ def map_transaction_response(tx_data: DRFTransactionResponse) -> Transaction:
         date=tx_data.date,
         created_at=tx_data.created_at,
         updated_at=tx_data.updated_at,
+        # The backend sends this flat and null when the transaction is unlinked.
+        account_id=AccountId(tx_data.account_id) if tx_data.account_id else None,
     )
 
 
@@ -119,12 +128,83 @@ def transaction_to_drf_payload(transaction: Transaction) -> dict:
     """Convert a domain Transaction to a DRF-compatible payload.
 
     Field names follow the backend's ``CreateTransactionSerializer``: the type
-    is ``transaction_type`` and ``category`` is required.
+    is ``transaction_type`` and ``category`` is required. ``account_id`` is
+    included **only when set**: the create serializer treats it as optional, and
+    an explicit ``null`` on update is rejected, so an unlinked transaction must
+    omit the key rather than send an empty one.
     """
-    return {
+    payload = {
         "transaction_type": transaction.type.value,
         "amount": str(transaction.amount),
         "category": transaction.category,
         "description": transaction.description,
         "date": transaction.date.isoformat(),
     }
+    if transaction.account_id:
+        payload["account_id"] = str(transaction.account_id)
+    return payload
+
+
+def map_funding_account_response(
+    account_data: DRFFundingAccountResponse,
+) -> FundingAccount:
+    """Map a DRF funding account onto the domain entity."""
+    return FundingAccount(
+        id=AccountId(account_data.id),
+        name=account_data.name,
+        account_type=account_data.account_type,
+        is_active=account_data.is_active,
+    )
+
+
+def funding_account_to_drf_payload(account: FundingAccount) -> dict:
+    """Build the ``CreateAccountSerializer`` body for a new account."""
+    return {"name": account.name, "account_type": account.account_type.value}
+
+
+#: The full type palette, in the order the backend's own charts use. Kept here
+#: so a bucket that the backend sent without one of the keys is still
+#: zero-filled instead of rendering as a gap in the stack.
+_ANALYTICS_TYPES = ("income", "expense", "investment", "savings")
+
+
+def _type_row(row) -> AnalyticsRow:
+    """Map one ``group_by=type`` row, zero-filling absent type keys.
+
+    The backend omits nothing in practice -- ``GetTransactionAnalytics``
+    defaults every missing type to ``"0.00"`` -- but a bucket with no activity
+    at all has been observed to arrive with the key missing, and a missing key
+    must render as zero rather than crash the mapper.
+    """
+    return AnalyticsRow(
+        label=row.label,
+        **{name: Decimal(getattr(row, name) or "0.00") for name in _ANALYTICS_TYPES},
+    )
+
+
+def map_analytics_response(
+    analytics_data: DRFAnalyticsResponse,
+) -> TransactionAnalytics:
+    """Map a DRF analytics payload onto the domain read model.
+
+    Category rows are sorted by descending total, with the label breaking ties,
+    which is the order a pie chart reads best in and is stable across calls.
+    Type rows keep the backend's chronological order.
+    """
+    if analytics_data.group_by is AnalyticsGroupBy.CATEGORY:
+        rows = [
+            AnalyticsRow(
+                label=row.label,
+                total=Decimal(row.total or "0.00"),
+            )
+            for row in analytics_data.data
+        ]
+        rows.sort(key=lambda row: (-(row.total or Decimal("0")), row.label))
+    else:
+        rows = [_type_row(row) for row in analytics_data.data]
+
+    return TransactionAnalytics(
+        period=analytics_data.period,
+        group_by=analytics_data.group_by,
+        rows=rows,
+    )

@@ -32,6 +32,8 @@ __all__ = [
     "net_balance",
     "mock_drf_dashboard_failure",
     "mock_drf_dashboard_overview",
+    "mock_drf_analytics",
+    "mock_drf_funding_accounts",
     "mock_drf_login",
     "mock_drf_login_unavailable",
     "mock_drf_logout",
@@ -383,6 +385,26 @@ def mock_drf_profile_failure(stub: StubDRFServer, status: int = 500) -> None:
         "/profile/me/",
         StubResponse(status, {"detail": "Profile unavailable."}),
     )
+
+
+def mock_drf_funding_accounts(
+    stub: StubDRFServer, accounts: list[dict] | None = None
+) -> None:
+    """Replace the rows ``GET /transactions/accounts/`` serves.
+
+    The stub filters to active accounts itself, so a seeded inactive row is
+    exercised by the same code path the backend uses.
+    """
+    stub.seed_funding_accounts(*(accounts or []))
+
+
+def mock_drf_analytics(stub: StubDRFServer, group_by: str, rows: list[dict]) -> None:
+    """Replace the analytics rows served for one ``group_by`` value.
+
+    The stub echoes the requested period and group and returns these rows
+    unchanged, so a test can pin exact labels and totals.
+    """
+    stub.seed_analytics(group_by, *rows)
 
 
 def mock_drf_dashboard_failure(stub: StubDRFServer, status: int = 500) -> None:

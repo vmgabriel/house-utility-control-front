@@ -49,6 +49,7 @@ TAILWIND_CDN = re.compile(r"^https://cdn\.tailwindcss\.com")
 MARKED_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/marked@")
 DOMPURIFY_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/dompurify@")
 SORTABLE_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/sortablejs@")
+CHARTJS_CDN = re.compile(r"^https://cdn\.jsdelivr\.net/npm/chart\.js")
 
 #: Third-party scripts vendored under `tests/e2e/vendor/`, matched to the CDN
 #: URL they stand in for. Adding a vendored asset is a two-line change here:
@@ -63,6 +64,11 @@ VENDOR_ASSETS = {
     MARKED_CDN: "marked.min.js",
     DOMPURIFY_CDN: "purify.min.js",
     SORTABLE_CDN: "sortable.min.js",
+    # Chart.js is vendored for the same reason as SortableJS: a stubbed-out
+    # `window.Chart` would make every chart assertion fail with "Chart is not a
+    # constructor" -- or, worse, pass on a page whose chart code never ran.
+    # Serving the real library is what makes a chart test prove anything.
+    CHARTJS_CDN: "chart.min.js",
 }
 
 #: A browser-side call to the API would mean the BFF contract was bypassed.

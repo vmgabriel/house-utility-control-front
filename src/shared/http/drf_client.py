@@ -502,6 +502,74 @@ class DRFAPIClient:
             )
         return body
 
+    async def list_funding_accounts(self, access_token: str) -> dict:
+        """List the caller's active funding accounts."""
+        status, body = await self._request(
+            "GET", "/transactions/accounts/", access_token=access_token
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to list funding accounts", status_code=status, detail=body
+            )
+        return body
+
+    async def create_funding_account(self, access_token: str, payload: dict) -> dict:
+        """Create a funding account; answers 201 with the persisted row."""
+        status, body = await self._request(
+            "POST",
+            "/transactions/accounts/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status in (400, 409):
+            raise ValidationError(
+                "Funding account validation failed", status_code=status, detail=body
+            )
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to create funding account", status_code=status, detail=body
+            )
+        return body
+
+    async def get_transaction_analytics(
+        self,
+        access_token: str,
+        start_date: str,
+        end_date: str,
+        group_by: str,
+        period: str,
+    ) -> dict:
+        """Fetch bounded, chart-ready aggregates.
+
+        Every argument is a plain string: this client is the shared kernel and
+        imports nothing from the budget vocabulary, so the adapter formats the
+        dates and unwraps the enums before calling in.
+        """
+        status, body = await self._request(
+            "GET",
+            "/transactions/analytics/",
+            access_token=access_token,
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "group_by": group_by,
+                "period": period,
+            },
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch transaction analytics",
+                status_code=status,
+                detail=body,
+            )
+        return body
+
     async def get_dashboard_summaries(self, access_token: str, period: str) -> list:
         """Fetch summaries for a period.
 

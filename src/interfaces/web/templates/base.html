@@ -49,6 +49,18 @@
     #}
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
 
+    {#
+        Charts for the analytics page.
+
+        Chart.js rather than a hand-rolled canvas, because the requirement is a
+        grouped bar chart and a category pie with legends and tooltips, and
+        reimplementing those is a project of its own. UMD build so a plain
+        `<script>` tag works with no bundler, which is the whole point of this
+        frontend. Pinned for the same supply-chain reason as the libraries
+        above; `tests/e2e/conftest.py` vendors it for the suite.
+    #}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <style>
         [x-cloak] { display: none !important; }
@@ -82,6 +94,8 @@
                            list is one click from here, so a second nav link
                            pointing straight at it would be redundant. #}
                         <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
+                        <a href="{{ url_for('budget.analytics') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Analytics</a>
+                        <a href="{{ url_for('budget.accounts') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Accounts</a>
                         <a href="{{ url_for('rentals.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Rentals</a>
                         <a href="{{ url_for('tasks.backlog') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Tasks</a>
                         {# The shopping-lists overview, which is the context's

@@ -20,5 +20,9 @@ class InvalidTransactionCategoryError(DomainException):
     """Raised when transaction category is missing or blank."""
 
 
+class InvalidAccountNameError(DomainException):
+    """Raised when a funding account name is missing or blank."""
+
+
 class TransactionNotFoundError(DomainException):
     """Raised when a transaction is not found."""

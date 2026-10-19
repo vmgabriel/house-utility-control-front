@@ -7,9 +7,21 @@ every rendering decision unit-testable without a request context.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 
-from src.budget.domain.entities import DashboardOverview, DashboardSummary, Transaction
-from src.budget.domain.value_objects import TransactionType
+from src.budget.domain.entities import (
+    DashboardOverview,
+    DashboardSummary,
+    FundingAccount,
+    Transaction,
+    TransactionAnalytics,
+)
+from src.budget.domain.value_objects import (
+    AnalyticsGroupBy,
+    AnalyticsPeriod,
+    TransactionType,
+)
 
 
 @dataclass
@@ -162,3 +174,145 @@ class DashboardOverviewViewModel:
                 else None
             ),
         )
+
+
+@dataclass
+class FundingAccountViewModel:
+    """ViewModel for a funding account row and the create-form dropdown."""
+
+    id: str
+    name: str
+    account_type: str
+    account_type_display: str
+    is_active: bool
+
+    @classmethod
+    def from_domain(cls, account: FundingAccount) -> "FundingAccountViewModel":
+        return cls(
+            id=str(account.id) if account.id else "",
+            name=account.name,
+            account_type=account.account_type.value,
+            account_type_display=account.account_type.label,
+            is_active=account.is_active,
+        )
+
+
+#: Chart series for a ``group_by=type`` result, in the same order and with the
+#: same colours the dashboard already uses, so the bar chart reads as the same
+#: palette as the summary cards.
+_TYPE_SERIES = (
+    ("income", "Income", "rgba(34, 197, 94, 0.6)"),
+    ("expense", "Expense", "rgba(239, 68, 68, 0.6)"),
+    ("investment", "Investment", "rgba(234, 179, 8, 0.6)"),
+    ("savings", "Savings", "rgba(168, 85, 247, 0.6)"),
+)
+
+#: Slice colours for the category pie chart. Chart.js cycles this list itself
+#: when it is shorter than the dataset, so it only needs enough entries to
+#: avoid two adjacent slices sharing a colour on a typical chart.
+_CATEGORY_PALETTE = (
+    "rgba(59, 130, 246, 0.7)",
+    "rgba(16, 185, 129, 0.7)",
+    "rgba(245, 158, 11, 0.7)",
+    "rgba(239, 68, 68, 0.7)",
+    "rgba(139, 92, 246, 0.7)",
+    "rgba(236, 72, 153, 0.7)",
+    "rgba(20, 184, 166, 0.7)",
+    "rgba(107, 114, 128, 0.7)",
+)
+
+
+def _format_bucket_label(label: str, period: str) -> str:
+    """Turn one backend bucket label into something a human reads.
+
+    The backend labels buckets ``2026-09-26`` (daily), ``2026-W39`` (weekly)
+    and ``2026-09`` (monthly). Anything that does not parse is passed through
+    unchanged rather than dropped, so an unrecognised label shows up in the
+    chart instead of silently vanishing from it.
+    """
+    try:
+        if period == AnalyticsPeriod.DAILY.value:
+            return datetime.strptime(label, "%Y-%m-%d").strftime("%b %d")
+        if period == AnalyticsPeriod.WEEKLY.value:
+            # strptime refuses `%G-W%V` without a weekday directive, so pin the
+            # Monday and read the ISO year and week back out.
+            parsed = datetime.strptime(f"{label}-1", "%G-W%V-%u")
+            iso_year, iso_week, _ = parsed.isocalendar()
+            return f"Week {iso_week:02d} {iso_year}"
+        if period == AnalyticsPeriod.MONTHLY.value:
+            return datetime.strptime(label, "%Y-%m").strftime("%b %Y")
+    except ValueError:
+        return label
+    return label
+
+
+def _number(value: Decimal | None) -> float:
+    """Render a decimal amount as the number Chart.js draws.
+
+    Deliberately a float: Chart.js does not plot decimal strings, and converting
+    here keeps the JavaScript in the template free of parsing logic.
+    """
+    return float(value or Decimal("0"))
+
+
+@dataclass
+class AnalyticsViewModel:
+    """Chart.js-ready projection of one analytics result.
+
+    The template receives ``labels`` and ``datasets`` already in the shape
+    Chart.js expects, so the Alpine component only has to hand them to
+    ``new Chart(...)``. No decimal string ever reaches the browser.
+    """
+
+    period: str
+    group_by: str
+    labels: list[str]
+    datasets: list[dict]
+    is_empty: bool
+
+    @classmethod
+    def from_domain(cls, analytics: TransactionAnalytics) -> "AnalyticsViewModel":
+        if analytics.group_by is AnalyticsGroupBy.CATEGORY:
+            labels = [row.label for row in analytics.rows]
+            values = [_number(row.total) for row in analytics.rows]
+            datasets = [
+                {
+                    "label": "Expenses by category",
+                    "data": values,
+                    "backgroundColor": [
+                        _CATEGORY_PALETTE[index % len(_CATEGORY_PALETTE)]
+                        for index in range(len(values))
+                    ],
+                }
+            ]
+        else:
+            labels = [
+                _format_bucket_label(row.label, analytics.period.value)
+                for row in analytics.rows
+            ]
+            datasets = [
+                {
+                    "label": display,
+                    "data": [_number(getattr(row, field)) for row in analytics.rows],
+                    "backgroundColor": colour,
+                }
+                for field, display, colour in _TYPE_SERIES
+            ]
+
+        return cls(
+            period=analytics.period.value,
+            group_by=analytics.group_by.value,
+            labels=labels,
+            datasets=datasets,
+            is_empty=not analytics.rows,
+        )
+
+    def to_dict(self) -> dict:
+        """Serialise for the fetch endpoint consumed by the chart script."""
+        return {
+            "period": self.period,
+            "groupBy": self.group_by,
+            "labels": self.labels,
+            "datasets": self.datasets,
+            "isEmpty": self.is_empty,
+        }
