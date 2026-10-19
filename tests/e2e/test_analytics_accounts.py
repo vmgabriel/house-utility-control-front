@@ -1,4 +1,4 @@
-"""E2E tests for the analytics and funding-account pages.
+"""E2E tests for the dashboard's analytics section and accounts modal.
 
 Chart.js and Alpine are served from ``tests/e2e/vendor`` (see ``offline_assets``)
 so these assert against a real chart instance. A stubbed-out ``window.Chart``
@@ -69,13 +69,18 @@ def wait_for_analytics_calls(
     )
 
 
-class TestAnalyticsPage:
+def open_accounts_modal(page: Page) -> None:
+    page.get_by_test_id("manage-accounts").click()
+    expect(page.get_by_test_id("accounts-modal")).to_be_visible()
+
+
+class TestDashboardAnalytics:
     def test_redirects_when_not_authenticated(self, page: Page, mock_drf):
-        page.goto("/budget/analytics/")
+        page.goto("/dashboard/")
         expect_path(page, "/auth/login")
 
     def test_renders_live_bar_and_pie_charts(self, page: Page, authed: Page, mock_drf):
-        page.goto("/budget/analytics/")
+        page.goto("/dashboard/")
         wait_for_chart(page, "barChart")
         wait_for_chart(page, "pieChart")
 
@@ -100,16 +105,67 @@ class TestAnalyticsPage:
         expect(page.get_by_test_id("bar-chart")).to_be_visible()
         expect(page.get_by_test_id("pie-chart")).to_be_hidden()
 
+    def test_the_section_sits_below_the_summary_cards(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        page.goto("/dashboard/")
+
+        analytics = page.get_by_test_id("analytics-section")
+        expect(analytics).to_be_visible()
+        expect(analytics.get_by_role("heading", name="Analytics")).to_be_visible()
+        # The first summary card must precede the charts in document order.
+        summary_top = page.get_by_role("heading", name="This Month").bounding_box()
+        analytics_top = analytics.bounding_box()
+        assert summary_top is not None and analytics_top is not None
+        assert summary_top["y"] < analytics_top["y"]
+
     def test_switching_grouping_shows_the_pie_panel(
         self, page: Page, authed: Page, mock_drf
     ):
-        page.goto("/budget/analytics/")
+        page.goto("/dashboard/")
         wait_for_chart(page, "barChart")
 
         page.get_by_test_id("group-category").click()
 
         expect(page.get_by_test_id("pie-chart")).to_be_visible()
         expect(page.get_by_test_id("bar-chart")).to_be_hidden()
+
+    def test_switching_grouping_measures_the_hidden_pie_chart(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        page.goto("/dashboard/")
+        wait_for_chart(page, "barChart")
+
+        page.get_by_test_id("group-category").click()
+        wait_for_chart(page, "pieChart")
+
+        # The pie chart is created while its panel is hidden by `x-show`, so
+        # Chart.js measures a zero-sized canvas until the panel becomes visible.
+        # Without a resize on the toggle, the canvas stays blank.
+        page.wait_for_function("""() => {
+                const chart = Chart.getChart(document.getElementById('pieChart'));
+                return chart && chart.width > 0 && chart.height > 0;
+            }""")
+        pie = chart_snapshot(page, "pieChart")
+        assert pie is not None
+        assert pie["labels"] == ["Housing", "Food", "Transport"]
+
+    def test_empty_analytics_shows_a_message_instead_of_an_empty_chart(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_analytics(mock_drf, "type", [])
+        mock_drf_analytics(mock_drf, "category", [])
+
+        page.goto("/dashboard/")
+
+        empty = page.get_by_test_id("analytics-empty")
+        expect(empty).to_be_visible()
+        expect(empty).to_have_text("No data for this period.")
+        expect(page.get_by_test_id("bar-chart")).to_be_hidden()
+        assert page.evaluate("""() => {
+                const canvas = document.getElementById('barChart');
+                return Chart.getChart(canvas) === undefined;
+            }""")
 
     def test_switching_period_refetches_both_series(
         self, page: Page, authed: Page, mock_drf
@@ -131,7 +187,7 @@ class TestAnalyticsPage:
         )
         mock_drf_analytics(mock_drf, "category", [{"label": "Food", "total": "2.00"}])
 
-        page.goto("/budget/analytics/")
+        page.goto("/dashboard/")
         wait_for_analytics_calls(mock_drf, 2)
         page.wait_for_function(
             """() => Chart.getChart(document.getElementById('barChart'))
@@ -155,17 +211,24 @@ class TestAnalyticsPage:
             "GET", ANALYTICS_PATH, StubResponse(500, {"detail": "Analytics down."})
         )
 
-        page.goto("/budget/analytics/")
+        page.goto("/dashboard/")
 
         error = page.get_by_test_id("analytics-error")
         expect(error).to_be_visible()
         expect(error).to_have_text("Could not load analytics. Please try again.")
 
 
-class TestFundingAccountsPage:
-    def test_redirects_when_not_authenticated(self, page: Page, mock_drf):
-        page.goto("/budget/accounts/")
-        expect_path(page, "/auth/login")
+class TestDashboardAccountsModal:
+    def test_the_modal_is_closed_until_requested(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        page.goto("/dashboard/")
+
+        expect(page.get_by_test_id("accounts-modal")).to_be_hidden()
+        open_accounts_modal(page)
+        expect(
+            page.get_by_role("heading", name="Manage Funding Accounts")
+        ).to_be_visible()
 
     def test_lists_the_accounts_the_backend_has(
         self, page: Page, authed: Page, mock_drf
@@ -188,7 +251,8 @@ class TestFundingAccountsPage:
             ],
         )
 
-        page.goto("/budget/accounts/")
+        page.goto("/dashboard/")
+        open_accounts_modal(page)
 
         rows = page.get_by_test_id("funding-account")
         expect(rows).to_have_count(2)
@@ -198,7 +262,8 @@ class TestFundingAccountsPage:
     def test_shows_the_empty_state(self, page: Page, authed: Page, mock_drf):
         mock_drf_funding_accounts(mock_drf, [])
 
-        page.goto("/budget/accounts/")
+        page.goto("/dashboard/")
+        open_accounts_modal(page)
 
         expect(page.get_by_text("No funding accounts yet")).to_be_visible()
 
@@ -206,18 +271,20 @@ class TestFundingAccountsPage:
         self, page: Page, authed: Page, mock_drf
     ):
         mock_drf_funding_accounts(mock_drf, [])
-        page.goto("/budget/accounts/")
+        page.goto("/dashboard/")
+        open_accounts_modal(page)
         expect(page.get_by_text("No funding accounts yet")).to_be_visible()
 
         page.get_by_label("Name").fill("Visa Rewards")
         page.get_by_label("Type").select_option("credit_card")
         page.get_by_role("button", name="Create account").click()
 
-        expect_path(page, "/budget/accounts/")
+        expect_path(page, "/dashboard/")
         expect(
             page.get_by_text("Funding account created successfully!")
         ).to_be_visible()
 
+        open_accounts_modal(page)
         row = page.get_by_test_id("funding-account")
         expect(row).to_have_count(1)
         expect(row).to_contain_text("Visa Rewards")
@@ -249,7 +316,8 @@ class TestFundingAccountsPage:
             ],
         )
 
-        page.goto("/budget/accounts/")
+        page.goto("/dashboard/")
+        open_accounts_modal(page)
 
         expect(page.get_by_test_id("funding-account")).to_have_count(1)
         expect(page.get_by_text("Dormant")).to_have_count(0)

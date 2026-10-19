@@ -68,6 +68,9 @@ def nav_html(client) -> str:
         respx.get(f"{BASE}/profile/").mock(
             return_value=httpx.Response(500, json={"detail": "unavailable"})
         )
+        respx.get(f"{BASE}/transactions/accounts/").mock(
+            return_value=httpx.Response(200, json={"count": 0, "results": []})
+        )
         html = client.get("/dashboard/").get_data(as_text=True)
 
     match = re.search(r"<nav\b.*?</nav>", html, re.DOTALL)
@@ -104,6 +107,13 @@ class TestFinancialLinks:
 
     def test_rentals_link_survives(self, nav_html):
         assert 'href="/rentals/"' in nav_html
+
+    def test_analytics_and_accounts_are_not_nav_links(self, nav_html):
+        """Both moved onto the dashboard: charts inline, accounts in a modal."""
+        assert ">Analytics</a>" not in nav_html
+        assert ">Accounts</a>" not in nav_html
+        assert "/budget/analytics/" not in nav_html
+        assert "/budget/accounts/" not in nav_html
 
 
 class TestAlignment:

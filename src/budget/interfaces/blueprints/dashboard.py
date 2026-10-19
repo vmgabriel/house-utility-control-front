@@ -2,9 +2,14 @@
 
 from flask import Blueprint, current_app, redirect, render_template, request, url_for
 
+from src.budget.application.use_cases.accounts import GetFundingAccountsUseCase
 from src.budget.application.use_cases.dashboard import GetDashboardOverviewUseCase
 from src.budget.domain.entities import DashboardOverview
-from src.budget.interfaces.viewmodels import DashboardOverviewViewModel
+from src.budget.domain.value_objects import AccountType
+from src.budget.interfaces.viewmodels import (
+    DashboardOverviewViewModel,
+    FundingAccountViewModel,
+)
 from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.http.drf_client import ServiceUnavailableError
 
@@ -15,7 +20,7 @@ EMPTY_OVERVIEW = DashboardOverview(today=None, this_week=None, this_month=None)
 
 @dashboard_bp.route("/")
 async def index():
-    """Dashboard index page."""
+    """Dashboard index page: summaries, analytics, and account management."""
     cookie_manager: JWTCookieManager = current_app.cookie_manager
     access_token = cookie_manager.get_access_token(request)
 
@@ -40,4 +45,32 @@ async def index():
         # that, so an empty dashboard plus a blank slate is a fair report.
         viewmodel = DashboardOverviewViewModel.from_domain(EMPTY_OVERVIEW)
 
-    return render_template("dashboard/index.html", overview=viewmodel)
+    # The "Manage Accounts" modal lists these server-side so the first paint is
+    # complete and the modal needs no fetch of its own. Best-effort on purpose:
+    # an accounts failure must not take the dashboard down with it. The modal
+    # says so inline instead of showing an empty list that reads as "you have
+    # no accounts".
+    accounts_use_case: GetFundingAccountsUseCase = (
+        current_app.get_funding_accounts_use_case
+    )
+    accounts_unavailable = False
+    try:
+        accounts = await accounts_use_case.execute(access_token)
+    except Exception:
+        accounts = []
+        accounts_unavailable = True
+
+    account_viewmodels = [
+        FundingAccountViewModel.from_domain(account)
+        for account in accounts
+        if account.is_active
+    ]
+
+    return render_template(
+        "dashboard/index.html",
+        overview=viewmodel,
+        accounts=account_viewmodels,
+        account_types=AccountType,
+        accounts_unavailable=accounts_unavailable,
+        analytics_endpoint=url_for("budget.analytics_data"),
+    )

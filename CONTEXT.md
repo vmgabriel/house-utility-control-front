@@ -5,6 +5,8 @@
 - Current Phase: Production Readiness (Phase 3: Gunicorn, JSON Logging, Rate Limiting, CI/CD) — **implemented**, pending developer review. No commits made.
 
 ## Recent Architectural Decisions
+- **Analytics and accounts consolidated into the dashboard**: the period/grouping toggles and Chart.js canvases render inline below the summary cards, and funding accounts are managed from a server-rendered modal. `/budget/analytics/` and `/budget/accounts/` are no longer pages; `/budget/analytics/data/` still hydrates the charts and `/budget/accounts/create` handles the modal POST. The navbar keeps only Transactions, Rentals, Tasks, Purchases and the user menu.
+- **Analytics default windows are clamped to the backend's 366-day ceiling**: the monthly default is twelve calendar months *including* the current one. The previous thirteen-month window exceeded the limit on almost every day, which surfaced as "Could not load analytics" and looked intermittent.
 - **Modular Monolith structure**: `src/{budget,identity,profile,tasks,purchases,rentals}/` with `src/shared/` kernel. Each context owns its 4 layers; no cross-context imports (enforced by `tests/integration/test_context_boundaries.py` via AST parsing).
 - **Single composition root**: `src/interfaces/web/app.py` is the only module that knows both Flask and `httpx`. All repositories and use cases are wired there and attached as `app.*` attributes.
 - **Auto-refresh JWT proxy**: Protected repositories are wrapped in `AutoRefreshingRepository` (in `src/shared/http/`). A 401 triggers one refresh + one retry; rotated tokens are staged on `g.refreshed_tokens` and written in `after_request`.

@@ -41,21 +41,390 @@
     </section>
 {% endmacro %}
 
-<div class="mb-8">
-    <h1 class="text-3xl font-bold text-gray-900">Dashboard</h1>
-    <p class="text-gray-600 mt-2">Your financial overview</p>
-</div>
+{#
+    One scope owns the "Manage Accounts" button and its dialog, because Alpine
+    only evaluates directives inside an `x-data` subtree. The analytics section
+    below is a sibling scope of its own: it is an independent interaction, and
+    nesting it here is not required for either to work.
+#}
+<div x-data="{ accountsOpen: false }" @keydown.escape.window="accountsOpen = false">
+    <div class="mb-8 flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Dashboard</h1>
+            <p class="text-gray-600 mt-2">Your financial overview</p>
+        </div>
+        <div class="flex flex-col sm:flex-row gap-3">
+            <button
+                type="button"
+                @click="accountsOpen = true"
+                aria-haspopup="dialog"
+                data-testid="manage-accounts"
+                class="bg-white text-gray-700 border border-gray-300 px-6 py-2 rounded-lg hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            >
+                Manage Accounts
+            </button>
+            <a href="{{ url_for('transactions.index') }}"
+               class="bg-blue-600 text-white px-6 py-2 rounded-lg text-center hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
+                View all transactions
+            </a>
+        </div>
+    </div>
 
-<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-    {{ summary_card(overview.today, 'Today') }}
-    {{ summary_card(overview.this_week, 'This Week') }}
-    {{ summary_card(overview.this_month, 'This Month') }}
-</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {{ summary_card(overview.today, 'Today') }}
+        {{ summary_card(overview.this_week, 'This Week') }}
+        {{ summary_card(overview.this_month, 'This Month') }}
+    </div>
 
-<div class="mt-8 flex justify-end">
-    <a href="{{ url_for('transactions.index') }}"
-       class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
-        View all transactions
-    </a>
+    {#
+        Period and grouping toggles, plus two Chart.js canvases.
+
+        One Alpine scope owns the toggles, both charts and the fetch, because
+        they are one interaction: changing the period re-queries both series,
+        and the grouping switch chooses which of the two is on screen.
+
+        The endpoint is lifted from a `data-*` attribute in `x-init` rather than
+        interpolated into the `x-data` body: that body is a JavaScript
+        expression, and `test_user_data_is_not_interpolated_into_javascript`
+        requires anything placed there to be argued for first.
+
+        The two fetches are sequential, not `Promise.all`. Both requests carry
+        the same access token, and an expired token would make them race to
+        refresh it; with a rotating backend the loser retries with a refresh
+        token that has already been replaced and the chart fails. One at a time
+        lets the first response's rotated cookies settle before the second call.
+    #}
+    <section
+        class="mt-10"
+        aria-labelledby="analytics-title"
+        data-testid="analytics-section"
+        x-data="{
+            period: 'monthly',
+            groupBy: 'type',
+            loading: true,
+            error: '',
+            url: '',
+            typeData: null,
+            categoryData: null,
+            barChart: null,
+            pieChart: null,
+            async start(el) {
+                this.url = el.dataset.analyticsUrl;
+                // The canvases are inside `x-show` panels, so Alpine must have
+                // applied the directives before Chart.js measures them.
+                await Alpine.nextTick();
+                await this.load();
+            },
+            async load() {
+                this.loading = true;
+                this.error = '';
+                try {
+                    // Sequential, not `Promise.all`: both requests carry the
+                    // same access token, and an expired token would make them
+                    // race to refresh it. One at a time lets the first
+                    // response's rotated cookies settle before the second.
+                    this.typeData = await this.fetchPayload('type');
+                    this.categoryData = await this.fetchPayload('category');
+                } catch (e) {
+                    this.error = 'Could not load analytics. Please try again.';
+                } finally {
+                    this.loading = false;
+                }
+                // Wait for the `x-show` panels to become visible again before
+                // creating or updating a chart: a chart built inside a hidden
+                // canvas keeps a zero size and never draws.
+                await Alpine.nextTick();
+                if (this.error) {
+                    this.destroyCharts();
+                    return;
+                }
+                this.renderCharts();
+                await Alpine.nextTick();
+                this.resizeVisibleChart();
+            },
+            async fetchPayload(groupBy) {
+                const url = new URL(this.url, window.location.origin);
+                url.searchParams.set('period', this.period);
+                url.searchParams.set('group_by', groupBy);
+                const response = await fetch(url.toString(), {
+                    headers: { Accept: 'application/json' },
+                    credentials: 'same-origin',
+                });
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
+            },
+            hasData(payload) {
+                return Boolean(payload) &&
+                    payload.isEmpty !== true &&
+                    Array.isArray(payload.labels) &&
+                    payload.labels.length > 0;
+            },
+            currentHasData() {
+                return this.hasData(
+                    this.groupBy === 'category' ? this.categoryData : this.typeData
+                );
+            },
+            renderCharts() {
+                this.renderBar(this.typeData);
+                this.renderPie(this.categoryData);
+            },
+            renderBar(payload) {
+                if (!this.hasData(payload)) {
+                    if (this.barChart) {
+                        this.barChart.destroy();
+                        this.barChart = null;
+                    }
+                    return;
+                }
+                if (this.barChart) {
+                    // Only the series changed, so keep the instance and update
+                    // it. Recreating on every period switch leaks listeners and
+                    // causes the old canvas to be redrawn on top of the new one.
+                    this.barChart.data = { labels: payload.labels, datasets: payload.datasets };
+                    this.barChart.update();
+                    return;
+                }
+                if (typeof Chart === 'undefined') return;
+                const canvas = document.getElementById('barChart');
+                if (!canvas) return;
+                this.barChart = new Chart(canvas.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels: payload.labels, datasets: payload.datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                        scales: { y: { beginAtZero: true } },
+                    },
+                });
+            },
+            renderPie(payload) {
+                if (!this.hasData(payload)) {
+                    if (this.pieChart) {
+                        this.pieChart.destroy();
+                        this.pieChart = null;
+                    }
+                    return;
+                }
+                if (this.pieChart) {
+                    this.pieChart.data = { labels: payload.labels, datasets: payload.datasets };
+                    this.pieChart.update();
+                    return;
+                }
+                if (typeof Chart === 'undefined') return;
+                const canvas = document.getElementById('pieChart');
+                if (!canvas) return;
+                this.pieChart = new Chart(canvas.getContext('2d'), {
+                    type: 'pie',
+                    data: { labels: payload.labels, datasets: payload.datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                    },
+                });
+            },
+            destroyCharts() {
+                if (this.barChart) {
+                    this.barChart.destroy();
+                    this.barChart = null;
+                }
+                if (this.pieChart) {
+                    this.pieChart.destroy();
+                    this.pieChart = null;
+                }
+            },
+            resizeVisibleChart() {
+                const chart = this.groupBy === 'category'
+                    ? this.pieChart
+                    : this.barChart;
+                if (chart) chart.resize();
+            },
+            async selectPeriod(value) {
+                if (this.period === value) return;
+                this.period = value;
+                await this.load();
+            },
+            async selectGroupBy(value) {
+                if (this.groupBy === value) return;
+                this.groupBy = value;
+                // The newly shown canvas was hidden (and therefore zero-sized)
+                // while its chart was created; measure it now that it is visible.
+                await Alpine.nextTick();
+                this.resizeVisibleChart();
+            },
+        }"
+        data-analytics-url="{{ analytics_endpoint }}"
+        x-init="start($el)"
+    >
+        <div class="mb-4">
+            <h2 id="analytics-title" class="text-2xl font-bold text-gray-900">Analytics</h2>
+            <p class="text-gray-600 mt-1">Income, expenses, investments and savings over time</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="bg-white rounded-lg shadow p-4 mb-6 flex flex-col sm:flex-row sm:items-center gap-4">
+            <fieldset>
+                <legend class="sr-only">Period</legend>
+                <div class="inline-flex rounded-lg border border-gray-200 p-1" role="group" aria-label="Period">
+                    <button type="button" data-period="daily" data-testid="period-daily"
+                            @click="selectPeriod('daily')"
+                            :class="period === 'daily' ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'"
+                            class="px-4 py-1.5 rounded-md text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Daily
+                    </button>
+                    <button type="button" data-period="weekly" data-testid="period-weekly"
+                            @click="selectPeriod('weekly')"
+                            :class="period === 'weekly' ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'"
+                            class="px-4 py-1.5 rounded-md text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Weekly
+                    </button>
+                    <button type="button" data-period="monthly" data-testid="period-monthly"
+                            @click="selectPeriod('monthly')"
+                            :class="period === 'monthly' ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'"
+                            class="px-4 py-1.5 rounded-md text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                        Monthly
+                    </button>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend class="sr-only">Group by</legend>
+                <div class="inline-flex rounded-lg border border-gray-200 p-1" role="group" aria-label="Group by">
+                    <button type="button" data-group-by="type" data-testid="group-type"
+                            @click="selectGroupBy('type')"
+                            :class="groupBy === 'type' ? 'bg-gray-800 text-white' : 'text-gray-700 hover:bg-gray-100'"
+                            class="px-4 py-1.5 rounded-md text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-500">
+                        By type
+                    </button>
+                    <button type="button" data-group-by="category" data-testid="group-category"
+                            @click="selectGroupBy('category')"
+                            :class="groupBy === 'category' ? 'bg-gray-800 text-white' : 'text-gray-700 hover:bg-gray-100'"
+                            class="px-4 py-1.5 rounded-md text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-500">
+                        By category
+                    </button>
+                </div>
+            </fieldset>
+
+            <p x-show="loading" x-cloak class="text-sm text-gray-500" role="status">Loading…</p>
+        </div>
+
+        <p x-show="error" x-cloak class="mb-6 rounded-lg bg-red-50 text-red-800 border border-red-200 p-4"
+           x-text="error" role="alert" data-testid="analytics-error"></p>
+
+        <p x-show="!loading && !error && !currentHasData()" x-cloak
+           class="mb-6 rounded-lg bg-gray-50 text-gray-600 border border-gray-200 p-4"
+           role="status" data-testid="analytics-empty">
+            No data for this period.
+        </p>
+
+        <!-- Type chart -->
+        <section x-show="groupBy === 'type'" class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-lg font-semibold text-gray-700 mb-4">By transaction type</h3>
+            <div x-show="!loading && !error && hasData(typeData)" x-cloak class="relative h-80">
+                <canvas id="barChart" data-testid="bar-chart"></canvas>
+            </div>
+        </section>
+
+        <!-- Category chart -->
+        <section x-show="groupBy === 'category'" x-cloak class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-lg font-semibold text-gray-700 mb-4">Expenses by category</h3>
+            <div x-show="!loading && !error && hasData(categoryData)" x-cloak class="relative h-80">
+                <canvas id="pieChart" data-testid="pie-chart"></canvas>
+            </div>
+        </section>
+    </section>
+
+    <!-- Manage Funding Accounts modal. Same `x-data` scope as the button above,
+         so `accountsOpen` is one piece of state for both. -->
+    <div
+        x-show="accountsOpen"
+        x-cloak
+        class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="accounts-modal-title"
+        data-testid="accounts-modal"
+        @click.self="accountsOpen = false"
+    >
+        <div class="bg-white rounded-lg shadow-xl max-w-lg w-full p-8 max-h-full overflow-y-auto">
+            <div class="flex items-start justify-between gap-4 mb-6">
+                <div>
+                    <h2 id="accounts-modal-title" class="text-2xl font-bold text-gray-900">Manage Funding Accounts</h2>
+                    <p class="text-sm text-gray-500 mt-1">The cards, accounts and wallets your transactions are paid from</p>
+                </div>
+                <button type="button" @click="accountsOpen = false" aria-label="Close accounts dialog"
+                        class="text-gray-400 hover:text-gray-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">
+                    <span aria-hidden="true" class="text-2xl">&times;</span>
+                </button>
+            </div>
+
+            {% if accounts_unavailable %}
+                <p class="rounded-lg bg-red-50 text-red-800 border border-red-200 p-4 mb-6" role="alert">
+                    Funding accounts could not be loaded right now.
+                </p>
+            {% elif accounts %}
+                <ul class="divide-y divide-gray-200 border-y border-gray-200" data-testid="funding-account-list">
+                    {% for account in accounts %}
+                        <li class="py-4 flex items-center justify-between gap-4"
+                            data-testid="funding-account"
+                            data-account-name="{{ account.name }}">
+                            <div>
+                                <p class="font-semibold text-gray-900">{{ account.name }}</p>
+                                <p class="text-sm text-gray-500">{{ account.account_type_display }}</p>
+                            </div>
+                            <span class="text-xs font-medium uppercase tracking-wide text-green-700 bg-green-50 px-2 py-1 rounded">
+                                Active
+                            </span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <div class="p-8 text-center text-gray-500 border-y border-gray-200">
+                    <p class="text-lg">No funding accounts yet</p>
+                    <p class="text-sm mt-2">Add one to tag your transactions with where the money came from</p>
+                </div>
+            {% endif %}
+
+            <form method="POST" action="{{ url_for('budget.create_account') }}" class="mt-6">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <h3 class="text-lg font-semibold text-gray-700 mb-4">Add an account</h3>
+
+                <div class="mb-4">
+                    <label for="account_name" class="block text-sm font-medium text-gray-700 mb-2">Name</label>
+                    <input
+                        type="text"
+                        id="account_name"
+                        name="name"
+                        required
+                        maxlength="100"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="e.g. Visa Rewards"
+                    >
+                </div>
+
+                <div class="mb-6">
+                    <label for="account_type" class="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                    <select
+                        id="account_type"
+                        name="account_type"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                        {% for account_type in account_types %}
+                            <option value="{{ account_type.value }}">{{ account_type.label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <button
+                    type="submit"
+                    class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                >
+                    Create account
+                </button>
+            </form>
+        </div>
+    </div>
 </div>
 {% endblock %}
