@@ -204,7 +204,7 @@ class TestBranded503Page:
             },
         )
         assert response.status_code == 503
-        assert b"Service Unavailable - Budget Tracker" in response.data
+        assert b"Home Utility - Service Unavailable" in response.data
 
     def test_503_responses_carry_the_security_headers(self, offline_client):
         authenticate(offline_client)

@@ -35,7 +35,7 @@ class TestDashboard:
         mock_drf_dashboard_overview(mock_drf, has_data=False)
         page.goto("/dashboard/")
 
-        expect(page).to_have_title("Dashboard - Budget Tracker")
+        expect(page).to_have_title("Home Utility - Dashboard")
         expect(page.locator("h1")).to_have_text("Dashboard")
 
     def test_dashboard_forwards_the_access_token(

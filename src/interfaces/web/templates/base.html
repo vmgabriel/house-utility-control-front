@@ -3,7 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Budget Tracker{% endblock %}</title>
+    {# Brand favicon. Served by Flask's default static route from
+       `src/interfaces/web/static/favicon.ico` (the app root is
+       `src/interfaces/web`, so `static_folder` resolves next to this
+       template tree). #}
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <title>{% block title %}Home Utility{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
 
     {#
@@ -83,7 +88,7 @@
             <div class="flex justify-between items-center h-16">
                 <div class="flex items-center">
                     <a href="{{ url_for('dashboard.index') }}" class="text-xl font-bold text-blue-600 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 rounded">
-                        <span aria-hidden="true">&#128176;</span> Budget Tracker
+                        <span aria-hidden="true">&#127968;</span> Home Utility
                     </a>
                 </div>
 

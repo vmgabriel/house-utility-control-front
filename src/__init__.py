@@ -1,1 +1,1 @@
-"""Budget Tracker Frontend - SSR BFF application root package."""
+"""Home Utility Frontend - SSR BFF application root package."""

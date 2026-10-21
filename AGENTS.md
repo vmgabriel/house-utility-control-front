@@ -1,4 +1,4 @@
-# AGENTS.md - Budget Tracker Frontend (SSR BFF)
+# AGENTS.md - Home Utility Frontend (SSR BFF)
 
 This is a **Python Backend-for-Frontend (BFF)** built with Flask, Jinja2, Tailwind CSS, and Alpine.js. It talks to a decoupled Django REST Framework (DRF) backend via `httpx`.
 

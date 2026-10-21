@@ -48,7 +48,7 @@ class TestLoginPage:
     def test_login_page_loads(self, page: Page):
         page.goto("/auth/login")
 
-        expect(page).to_have_title("Login - Budget Tracker")
+        expect(page).to_have_title("Home Utility - Login")
         expect(page.locator("h2")).to_have_text("Sign In")
         expect(page.get_by_label("Email")).to_be_visible()
         expect(page.get_by_label("Password")).to_be_visible()

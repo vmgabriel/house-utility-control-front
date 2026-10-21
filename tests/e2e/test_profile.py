@@ -17,7 +17,7 @@ class TestProfilePage:
     def test_renders_general_tab_by_default(self, page: Page, authed: Page, mock_drf):
         page.goto("/profile/")
 
-        expect(page).to_have_title("Profile & Settings - Budget Tracker")
+        expect(page).to_have_title("Home Utility - Profile & Settings")
         expect(page.locator("h1")).to_have_text("Account Settings")
         general_form = page.locator("form[action$='/profile/']")
         expect(general_form).to_be_visible()
