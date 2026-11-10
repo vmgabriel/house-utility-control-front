@@ -1,5 +1,6 @@
 """Transactions blueprint."""
 
+import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -37,6 +38,8 @@ from src.shared.auth.jwt_cookie_manager import JWTCookieManager
 from src.shared.http.drf_client import ServiceUnavailableError
 
 transactions_bp = Blueprint("transactions", __name__, url_prefix="/transactions")
+
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 20
 
@@ -113,6 +116,9 @@ async def index():
         page=page,
         category_suggestions=CATEGORY_SUGGESTIONS,
         accounts=account_options,
+        # Surfaced in a subtle badge so an operator can immediately see whether
+        # the server's calendar day has drifted from the user's browser.
+        server_today=date.today().isoformat(),
     )
 
 
@@ -136,6 +142,10 @@ async def create():
     # default rather than letting the API reject the request with a 400.
     category = request.form.get("category", "").strip() or DEFAULT_CATEGORY
     date_str = request.form.get("date") or date.today().isoformat()
+    # Defensive normalization: a browser, proxy, or API client may append time
+    # information (e.g. "2026-11-02T00:00:00"). The backend contract is a bare
+    # calendar date, so strip anything after the date component.
+    date_str = date_str.split("T")[0].strip()
     # Optional: the selector has an empty option for "no funding account", and
     # the create serializer treats the field as optional, so an unset value
     # must be omitted rather than sent as an empty string.
@@ -160,6 +170,13 @@ async def create():
         return redirect(url_for("transactions.index"))
 
     create_use_case: CreateTransactionUseCase = current_app.create_transaction_use_case
+    # Diagnostic breadcrumb for the production-only "date in the future" report:
+    # the form value, the normalized value, and the BFF's calendar day must all
+    # agree for a current/past date.
+    logger.info(
+        f"Creating transaction. Form date: {request.form.get('date')}, "
+        f"Parsed date: {date_str}, BFF Server Today: {date.today().isoformat()}"
+    )
     try:
         await create_use_case.execute(access_token, transaction)
     except ServiceUnavailableError:

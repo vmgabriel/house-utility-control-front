@@ -138,8 +138,14 @@ def transaction_to_drf_payload(transaction: Transaction) -> dict:
         "amount": str(transaction.amount),
         "category": transaction.category,
         "description": transaction.description,
+        # .isoformat() on a datetime.date object guarantees "YYYY-MM-DD"
+        # without timezone offsets.
         "date": transaction.date.isoformat(),
     }
+    # A datetime leaking into `transaction.date` would serialise with a "T" and
+    # a time component, which the backend rejects. Fail loudly here instead of
+    # letting it look like a future date in production.
+    assert "T" not in payload["date"], "Date payload must not contain time"
     if transaction.account_id:
         payload["account_id"] = str(transaction.account_id)
     return payload

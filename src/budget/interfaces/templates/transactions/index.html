@@ -35,6 +35,14 @@
     <div>
         <h1 class="text-3xl font-bold text-gray-900">Transactions</h1>
         <p class="text-gray-600 mt-2">Manage your income, expenses, investments, and savings</p>
+        {# Subtle diagnostic badge: shown in production (DEBUG off), or locally
+           with ?debug=1, so an operator can spot a server/browser calendar
+           mismatch immediately. #}
+        {% if not config.DEBUG or request.args.get('debug') == '1' %}
+            <p class="mt-1 text-xs text-gray-400" title="The calendar day the BFF uses to validate transaction dates">
+                Server Date: {{ server_today }}
+            </p>
+        {% endif %}
     </div>
     <button
         type="button"

@@ -43,11 +43,15 @@ class CreateTransactionUseCase:
     """Use case for creating a transaction."""
 
     transaction_repository: TransactionRepositoryPort
-    current_date: date
+    #: Optional frozen "today" for tests. When omitted, the date is resolved per
+    #: execution. A value captured at app startup goes stale in a long-running
+    #: production process, which makes today's date look like the future after
+    #: midnight.
+    current_date: date | None = None
 
     async def execute(self, access_token: str, transaction: Transaction) -> Transaction:
         """Create a new transaction after validation."""
-        transaction.validate(self.current_date)
+        transaction.validate(self.current_date or date.today())
         return await self.transaction_repository.create_transaction(
             access_token, transaction
         )
@@ -58,11 +62,13 @@ class UpdateTransactionUseCase:
     """Use case for updating a transaction."""
 
     transaction_repository: TransactionRepositoryPort
-    current_date: date
+    #: See `CreateTransactionUseCase.current_date`: resolved per execution so a
+    #: long-running process never validates against a stale calendar day.
+    current_date: date | None = None
 
     async def execute(self, access_token: str, transaction: Transaction) -> Transaction:
         """Update an existing transaction after validation."""
-        transaction.validate(self.current_date)
+        transaction.validate(self.current_date or date.today())
         return await self.transaction_repository.update_transaction(
             access_token, transaction
         )

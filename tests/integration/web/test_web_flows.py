@@ -438,6 +438,37 @@ class TestTransactionCreation:
         }
 
     @respx.mock
+    def test_create_transaction_strips_time_from_date(self, client, csrf_token):
+        authenticate(client)
+        route = respx.post(f"{BASE}/transactions/").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "id": "txn-new",
+                    "transaction_type": "expense",
+                    "amount": "25.00",
+                    "category": "Food",
+                    "description": "Lunch",
+                    "date": TODAY,
+                },
+            )
+        )
+        # A client that sends a datetime must still produce a bare date; the
+        # backend contract is "YYYY-MM-DD".
+        client.post(
+            "/transactions/create",
+            data={
+                "type": "expense",
+                "amount": "25.00",
+                "description": "Lunch",
+                "category": "Food",
+                "date": f"{TODAY}T00:00:00",
+                "csrf_token": csrf_token,
+            },
+        )
+        assert json.loads(route.calls[0].request.content)["date"] == TODAY
+
+    @respx.mock
     def test_create_transaction_defaults_blank_category(self, client, csrf_token):
         authenticate(client)
         route = respx.post(f"{BASE}/transactions/").mock(

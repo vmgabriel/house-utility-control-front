@@ -49,6 +49,40 @@ class TestCreateTransactionUseCase:
         assert result.id == "txn-123"
         mock_transaction_repo.create_transaction.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_create_transaction_resolves_today_per_execution(self):
+        """Regression: no date is captured at construction time.
+
+        The composition root used to pass ``current_date=date.today()`` once.
+        In a long-running production process that value goes stale after
+        midnight, so a transaction dated today is rejected as "in the future".
+        """
+        mock_transaction_repo = AsyncMock()
+        mock_transaction_repo.create_transaction.return_value = Transaction(
+            id=TransactionId("txn-123"),
+            user_id=UserId("user-123"),
+            type=TransactionType.EXPENSE,
+            amount=Money(Decimal("50.00")),
+            description="Groceries",
+            date=date.today(),
+        )
+        use_case = CreateTransactionUseCase(
+            transaction_repository=mock_transaction_repo
+        )
+        transaction = Transaction(
+            id=None,
+            user_id=UserId("user-123"),
+            type=TransactionType.EXPENSE,
+            amount=Money(Decimal("50.00")),
+            description="Groceries",
+            date=date.today(),
+        )
+
+        result = await use_case.execute("access-token", transaction)
+
+        assert result.id == "txn-123"
+        mock_transaction_repo.create_transaction.assert_called_once()
+
 
 class TestFetchTransactionsUseCase:
     @pytest.mark.asyncio

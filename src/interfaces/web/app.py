@@ -270,13 +270,15 @@ def create_app() -> Flask:
     app.get_transaction_use_case = GetTransactionUseCase(
         transaction_repository=safe_transaction_repo
     )
+    # `current_date` is deliberately not pinned here. These use cases resolve
+    # "today" per execution: a value captured at startup goes stale in a
+    # long-running production process, so a transaction dated today would be
+    # rejected as "in the future" after midnight.
     app.create_transaction_use_case = CreateTransactionUseCase(
         transaction_repository=safe_transaction_repo,
-        current_date=date.today(),
     )
     app.update_transaction_use_case = UpdateTransactionUseCase(
         transaction_repository=safe_transaction_repo,
-        current_date=date.today(),
     )
     app.delete_transaction_use_case = DeleteTransactionUseCase(
         transaction_repository=safe_transaction_repo
