@@ -302,8 +302,70 @@ class TestNavStructure:
         mock_drf_transactions_list(mock_drf)
         page.goto("/dashboard/")
 
-        row = page.locator("nav > div > div").first
+        # The row itself, not its wrapper: the wrapper also holds the mobile
+        # panel, so counting its children would no longer prove the row has
+        # exactly the brand and the right-hand cluster.
+        row = page.locator("nav .justify-between").first
         expect(row.locator(":scope > div")).to_have_count(2)
+
+
+class TestMobileMenu:
+    """The small-screen disclosure, wired by Alpine in `base.html`.
+
+    Tailwind never loads in this suite, so the responsive *visibility* is a class
+    contract asserted in `tests/integration/web/test_navigation.py`. What is
+    worth driving through a real browser is the behaviour Alpine owns: the
+    toggle opens the panel, Escape closes it and returns focus, and clicking
+    outside dismisses it.
+    """
+
+    def test_toggle_opens_the_panel(self, page: Page, authed: Page, mock_drf):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        menu = page.locator("#mobile-menu")
+        toggle = page.locator('button[aria-controls="mobile-menu"]')
+
+        expect(menu).to_be_hidden()
+        toggle.click()
+
+        expect(menu).to_be_visible()
+        expect(toggle).to_have_attribute("aria-expanded", "true")
+        expect(menu.get_by_role("link", name="Rentals")).to_be_visible()
+
+    def test_escape_closes_the_panel_and_returns_focus(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        menu = page.locator("#mobile-menu")
+        toggle = page.locator('button[aria-controls="mobile-menu"]')
+
+        toggle.click()
+        expect(menu).to_be_visible()
+
+        page.keyboard.press("Escape")
+
+        expect(menu).to_be_hidden()
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+        expect(toggle).to_be_focused()
+
+    def test_clicking_outside_closes_the_panel(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_transactions_list(mock_drf)
+        page.goto("/dashboard/")
+
+        menu = page.locator("#mobile-menu")
+        toggle = page.locator('button[aria-controls="mobile-menu"]')
+
+        toggle.click()
+        expect(menu).to_be_visible()
+
+        page.get_by_role("heading", name="Dashboard").click()
+
+        expect(menu).to_be_hidden()
 
 
 class TestAccountMenu:

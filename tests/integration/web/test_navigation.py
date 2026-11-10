@@ -79,25 +79,29 @@ def nav_html(client) -> str:
 
 
 class TestFinancialLinks:
-    def test_exactly_one_labelled_financial_link(self, nav_html):
-        """One link for the financial section, not two.
+    def test_exactly_one_labelled_financial_link_per_surface(self, nav_html):
+        """One link for the financial section on each navigation surface.
 
         Two sibling links ("Dashboard" and "Transactions") pointed at the same
-        bounded context, which is the clutter this replaced.
+        bounded context, which is the clutter this replaced. The nav now renders
+        the four sections twice -- once for the desktop bar, once for the mobile
+        disclosure -- so the check is per surface, not over the whole `<nav>`.
 
         Counted by label rather than by href, because the brand wordmark also
         links to the dashboard and always should.
         """
-        assert nav_html.count(">Transactions</a>") == 1
+        assert _cluster_inner(nav_html).count(">Transactions</a>") == 1
+        assert _mobile_menu_inner(nav_html).count(">Transactions</a>") == 1
         assert nav_html.count(">Dashboard</a>") == 0
         # The transaction *list* is reachable from the overview, so a nav link
         # straight at it is redundant.
         assert 'href="/transactions/"' not in nav_html
 
     def test_the_brand_still_links_to_the_overview(self, nav_html):
-        assert nav_html.count('href="/dashboard/"') == 2, (
-            "expected the wordmark and the Transactions link to both point at "
-            "the overview"
+        # The wordmark plus one Transactions link on each navigation surface.
+        assert nav_html.count('href="/dashboard/"') == 3, (
+            "expected the wordmark and both Transactions links (desktop + "
+            "mobile) to point at the overview"
         )
 
     def test_the_link_is_labelled_transactions(self, nav_html):
@@ -170,6 +174,87 @@ class TestAlignment:
         # And the links are still inside the same cluster.
         assert ">Transactions</a>" in inner
         assert ">Rentals</a>" in inner
+
+
+class TestResponsiveNavigation:
+    """The nav has two surfaces: the desktop bar and the mobile disclosure.
+
+    Tailwind never loads in the E2E browser (see the module docstring), so the
+    responsive switch is asserted here as a class contract. `hidden md:flex`
+    hides the desktop links below `md`; `md:hidden` hides the mobile panel from
+    `md` up. The toggle owns the panel through `aria-controls`.
+    """
+
+    def test_desktop_links_are_hidden_on_mobile(self, nav_html):
+        assert 'class="hidden md:flex items-center space-x-6"' in nav_html
+
+    def test_mobile_menu_is_hidden_from_md_up(self, nav_html):
+        opening = _mobile_menu_opening(nav_html)
+        assert "md:hidden" in opening
+        assert 'x-show="mobileOpen"' in opening
+        assert "x-cloak" in opening
+
+    def test_mobile_menu_contains_every_primary_section(self, nav_html):
+        mobile = _mobile_menu_inner(nav_html)
+        for label, href in (
+            ("Transactions", "/dashboard/"),
+            ("Rentals", "/rentals/"),
+            ("Tasks", "/tasks/"),
+            ("Purchases", "/purchases/"),
+        ):
+            assert f'href="{href}"' in mobile, label
+            assert f">{label}</a>" in mobile, label
+
+    def test_mobile_toggle_controls_the_menu(self, nav_html):
+        button = _mobile_toggle(nav_html)
+        assert 'aria-controls="mobile-menu"' in button
+        assert 'aria-expanded="false"' in button
+        assert ':aria-expanded="mobileOpen"' in button
+        assert "aria-label=" in button
+        assert "md:hidden" in button
+
+    def test_active_link_is_marked_for_assistive_tech(self, nav_html):
+        links = re.findall(r"<a\b[^>]*>Transactions</a>", nav_html, re.DOTALL)
+        assert len(links) == 2
+        assert all('aria-current="page"' in link for link in links)
+
+    def test_inactive_links_are_not_marked_as_current(self, nav_html):
+        links = re.findall(r"<a\b[^>]*>Rentals</a>", nav_html, re.DOTALL)
+        assert links
+        assert all('aria-current="page"' not in link for link in links)
+
+
+def _mobile_menu_opening(nav_html: str) -> str:
+    """The opening tag of the mobile disclosure panel."""
+    match = re.search(r'<div\b[^>]*id="mobile-menu"[^>]*>', nav_html, re.DOTALL)
+    assert match, "the mobile menu panel was not found in base.html"
+    return match.group(0)
+
+
+def _mobile_menu_inner(nav_html: str) -> str:
+    """The mobile panel's span, opening tag through its matching close."""
+    opening = _mobile_menu_opening(nav_html)
+    start = nav_html.index(opening)
+    depth = 0
+    for index in range(start, len(nav_html)):
+        if nav_html.startswith("<div", index):
+            depth += 1
+        elif nav_html.startswith("</div>", index):
+            depth -= 1
+            if depth == 0:
+                return nav_html[start:index]
+    raise AssertionError("unbalanced <div> in the mobile menu")
+
+
+def _mobile_toggle(nav_html: str) -> str:
+    """The opening tag of the hamburger button that controls the panel."""
+    match = re.search(
+        r'<button\b[^>]*aria-controls="mobile-menu"[^>]*>',
+        nav_html,
+        re.DOTALL,
+    )
+    assert match, "the mobile menu toggle was not found in base.html"
+    return match.group(0)
 
 
 def _row_span(nav_html: str) -> re.Match[str]:

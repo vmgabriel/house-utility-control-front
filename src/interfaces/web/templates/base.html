@@ -1,5 +1,50 @@
 <!DOCTYPE html>
 <html lang="en" class="h-full">
+{#
+    Primary-section link macros.
+
+    The desktop bar and the mobile disclosure render the same four sections.
+    Keeping the hrefs and the active-section rule in one place means the two
+    surfaces cannot drift apart. `aria-current="page"` is what tells a screen
+    reader which section the user is in, and it is set on both surfaces.
+#}
+{%- macro nav_link(endpoint, label, active) -%}
+<a href="{{ url_for(endpoint) }}"
+   class="{% if active %}text-blue-600 font-semibold{% else %}text-gray-700 font-medium{% endif %} hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded"
+   {% if active %}aria-current="page"{% endif %}>{{ label }}</a>
+{%- endmacro -%}
+
+{%- macro nav_link_mobile(endpoint, label, active) -%}
+<a href="{{ url_for(endpoint) }}"
+   class="block px-3 py-3 rounded-md text-base font-medium {% if active %}bg-blue-50 text-blue-700{% else %}text-gray-700 hover:bg-gray-50 hover:text-blue-600{% endif %} focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+   {% if active %}aria-current="page"{% endif %}>{{ label }}</a>
+{%- endmacro -%}
+
+{#
+    The four sections, defined once. `current_blueprint` is the Flask blueprint
+    name; the financial section owns three blueprints because the dashboard,
+    the transaction list, and the budget endpoints are one destination.
+#}
+{%- macro primary_nav_links(current_blueprint, mobile=False) -%}
+    {% if mobile %}
+        {{ nav_link_mobile('dashboard.index', 'Transactions', current_blueprint in ('dashboard', 'transactions', 'budget')) }}
+        {{ nav_link_mobile('rentals.index', 'Rentals', current_blueprint == 'rentals') }}
+        {{ nav_link_mobile('tasks.backlog', 'Tasks', current_blueprint == 'tasks') }}
+        {{ nav_link_mobile('purchases.lists', 'Purchases', current_blueprint == 'purchases') }}
+    {% else %}
+        {# Labelled "Transactions" because that is the context a user is in; it
+           renders the overview. The transaction list is one click from here, so
+           a second nav link pointing straight at it would be redundant. #}
+        {{ nav_link('dashboard.index', 'Transactions', current_blueprint in ('dashboard', 'transactions', 'budget')) }}
+        {{ nav_link('rentals.index', 'Rentals', current_blueprint == 'rentals') }}
+        {{ nav_link('tasks.backlog', 'Tasks', current_blueprint == 'tasks') }}
+        {# The shopping-lists overview, which is the context's landing page. The
+           wishlist is one click from it, so a second nav link pointing straight
+           at the wishlist would be redundant -- the same reasoning as
+           "Transactions" above naming the dashboard rather than the list. #}
+        {{ nav_link('purchases.lists', 'Purchases', current_blueprint == 'purchases') }}
+    {% endif %}
+{%- endmacro -%}
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -79,109 +124,153 @@
     <!-- Navigation -->
     <nav class="bg-white shadow-sm border-b border-gray-200" aria-label="Main navigation">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <!--
-                `justify-between` over exactly two children: the brand on the
-                left, and one right-hand cluster holding the links and the
-                account menu. Three siblings would spread the links apart, since
-                justify-between distributes free space between every child.
-            -->
-            <div class="flex justify-between items-center h-16">
-                <div class="flex items-center">
-                    <a href="{{ url_for('dashboard.index') }}" class="text-xl font-bold text-blue-600 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 rounded">
-                        <span aria-hidden="true">&#127968;</span> Home Utility
-                    </a>
-                </div>
-
-                <div class="flex items-center space-x-6">
-                    <div class="hidden sm:flex items-center space-x-6">
-                        {# Labelled "Transactions" because that is the context a
-                           user is in; it renders the overview. The transaction
-                           list is one click from here, so a second nav link
-                           pointing straight at it would be redundant. #}
-                        <a href="{{ url_for('dashboard.index') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Transactions</a>
-                        <a href="{{ url_for('rentals.index') }}" class="text-gray-700 hover:text-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Rentals</a>
-                        <a href="{{ url_for('tasks.backlog') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Tasks</a>
-                        {# The shopping-lists overview, which is the context's
-                           landing page. The wishlist is one click from it, so a
-                           second nav link pointing straight at the wishlist would
-                           be redundant -- the same reasoning as "Transactions"
-                           above naming the dashboard rather than the list. #}
-                        <a href="{{ url_for('purchases.lists') }}" class="text-gray-700 hover:text-blue-600 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded">Purchases</a>
-
-                        {# The LLM health dot: a layout-owned Alpine scope, like the
-                           account menu below. See `_llm_health.html`. Hidden below
-                           `md` because it is a status decoration. #}
-                        {% include "tasks/_llm_health.html" %}
+            {#
+                One Alpine scope owns the mobile toggle and the panel it
+                controls, so the two cannot drift apart. Escape closes the menu
+                and returns focus to the toggle; clicking outside dismisses it.
+            #}
+            <div x-data="{ mobileOpen: false }"
+                 @keydown.escape.window="if (mobileOpen) { mobileOpen = false; $refs.mobileToggle.focus() }"
+                 @click.outside="mobileOpen = false">
+                <!--
+                    `justify-between` over exactly two children: the brand on the
+                    left, and one right-hand cluster holding the links and the
+                    account menu. Three siblings would spread the links apart, since
+                    justify-between distributes free space between every child.
+                -->
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <a href="{{ url_for('dashboard.index') }}" class="text-xl font-bold text-blue-600 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 rounded">
+                            <span aria-hidden="true">&#127968;</span> Home Utility
+                        </a>
                     </div>
 
-                    <!--
-                        Account menu. One Alpine scope owns the button and the
-                        panel so the toggle and the `@click.outside` dismiss
-                        cannot drift apart; a button outside this `x-data`
-                        subtree would render and do nothing (AGENTS.md,
-                        "Alpine.js Scope Strictness").
+                    <div class="flex items-center space-x-6">
+                        <!-- Desktop nav: hidden on mobile, visible from the md breakpoint -->
+                        <div class="hidden md:flex items-center space-x-6">
+                            {{ primary_nav_links(request.blueprint) }}
 
-                        `h-16` matches the row height and is what centres this
-                        control: the badge is `w-8 h-8` inside a taller row, so
-                        without it the button hugs the top of the line.
+                            {# The LLM health dot: a layout-owned Alpine scope, like the
+                               account menu below. See `_llm_health.html`. Hidden below
+                               `md` because it is a status decoration. #}
+                            {% include "tasks/_llm_health.html" %}
+                        </div>
 
-                        `x-cloak` keeps the panel out of the layout before Alpine
-                        boots, which matters here because the panel is
-                        server-rendered and would otherwise flash on every load.
-                    -->
-                    <div class="relative" x-data="{ open: false }">
+                        <!--
+                            Account menu. One Alpine scope owns the button and the
+                            panel so the toggle and the `@click.outside` dismiss
+                            cannot drift apart; a button outside this `x-data`
+                            subtree would render and do nothing (AGENTS.md,
+                            "Alpine.js Scope Strictness").
+
+                            `h-16` matches the row height and is what centres this
+                            control: the badge is `w-8 h-8` inside a taller row, so
+                            without it the button hugs the top of the line.
+
+                            `x-cloak` keeps the panel out of the layout before Alpine
+                            boots, which matters here because the panel is
+                            server-rendered and would otherwise flash on every load.
+
+                            Opening this menu also closes the mobile disclosure,
+                            so the two panels never stack. The reverse direction
+                            is free: the account menu's own `@click.outside`
+                            closes it when the hamburger is tapped.
+
+                            `aria-label` gives the control a name whenever the
+                            visible user-name span is hidden: below `sm`, and
+                            between `md` and `lg`, where the desktop links need
+                            the room.
+                        -->
+                        <div class="relative" x-data="{ open: false }">
+                            <button type="button"
+                                    @click="open = !open; mobileOpen = false"
+                                    @click.outside="open = false"
+                                    aria-haspopup="true"
+                                    aria-label="Account menu for {{ current_user_name }}"
+                                    :aria-expanded="open"
+                                    class="flex items-center space-x-2 h-16 focus:outline-none group">
+                                {% if current_user_avatar %}
+                                    <img src="{{ current_user_avatar }}" alt=""
+                                         class="w-8 h-8 rounded-full border border-gray-300 object-cover group-hover:border-blue-500 transition">
+                                {% else %}
+                                    <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold text-sm border border-gray-300 group-hover:border-blue-500 transition"
+                                         data-testid="avatar-initials"
+                                         aria-hidden="true">{{ current_user_initials }}</div>
+                                {% endif %}
+                                <span class="text-gray-700 text-sm hidden sm:block md:hidden lg:block">{{ current_user_name }}</span>
+                                <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+
+                            <div x-show="open"
+                                 x-cloak
+                                 x-transition:enter="transition ease-out duration-200"
+                                 x-transition:enter-start="opacity-0 transform scale-95"
+                                 x-transition:enter-end="opacity-100 transform scale-100"
+                                 x-transition:leave="transition ease-in duration-75"
+                                 x-transition:leave-start="opacity-100 transform scale-100"
+                                 x-transition:leave-end="opacity-0 transform scale-95"
+                                 class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-50 border border-gray-200">
+                                <a href="{{ url_for('profile.index') }}"
+                                   class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Settings
+                                </a>
+                                {% if current_user_is_staff %}
+                                <a href="{{ url_for('users.admin_dashboard') }}"
+                                   class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                    Admin Panel
+                                </a>
+                                {% endif %}
+                                <div class="border-t border-gray-100 my-1"></div>
+                                <form action="{{ url_for('auth.logout') }}" method="POST">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                    <button type="submit"
+                                            class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+                                        Logout
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!--
+                            Mobile menu toggle: below `md` only. The 44px square is
+                            the WCAG touch target; `-mr-2` keeps it visually aligned
+                            with the container edge while the icon stays centred.
+                        -->
                         <button type="button"
-                                @click="open = !open"
-                                @click.outside="open = false"
-                                aria-haspopup="true"
-                                :aria-expanded="open"
-                                class="flex items-center space-x-2 h-16 focus:outline-none group">
-                            {% if current_user_avatar %}
-                                <img src="{{ current_user_avatar }}" alt=""
-                                     class="w-8 h-8 rounded-full border border-gray-300 object-cover group-hover:border-blue-500 transition">
-                            {% else %}
-                                <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold text-sm border border-gray-300 group-hover:border-blue-500 transition"
-                                     data-testid="avatar-initials"
-                                     aria-hidden="true">{{ current_user_initials }}</div>
-                            {% endif %}
-                            <span class="text-gray-700 text-sm hidden sm:block">{{ current_user_name }}</span>
-                            <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                x-ref="mobileToggle"
+                                @click="mobileOpen = !mobileOpen"
+                                aria-controls="mobile-menu"
+                                aria-expanded="false"
+                                :aria-expanded="mobileOpen"
+                                aria-label="Open navigation menu"
+                                :aria-label="mobileOpen ? 'Close navigation menu' : 'Open navigation menu'"
+                                class="md:hidden flex items-center justify-center w-11 h-11 -mr-2 rounded-md text-gray-700 hover:text-blue-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                            <svg x-show="!mobileOpen" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                            </svg>
+                            <svg x-show="mobileOpen" x-cloak class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                             </svg>
                         </button>
-
-                        <div x-show="open"
-                             x-cloak
-                             x-transition:enter="transition ease-out duration-200"
-                             x-transition:enter-start="opacity-0 transform scale-95"
-                             x-transition:enter-end="opacity-100 transform scale-100"
-                             x-transition:leave="transition ease-in duration-75"
-                             x-transition:leave-start="opacity-100 transform scale-100"
-                             x-transition:leave-end="opacity-0 transform scale-95"
-                             class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-50 border border-gray-200">
-                            <a href="{{ url_for('profile.index') }}"
-                               class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                                Settings
-                            </a>
-                            {% if current_user_is_staff %}
-                            <a href="{{ url_for('users.admin_dashboard') }}"
-                               class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                                Admin Panel
-                            </a>
-                            {% endif %}
-                            <div class="border-t border-gray-100 my-1"></div>
-                            <form action="{{ url_for('auth.logout') }}" method="POST">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                                <button type="submit"
-                                        class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
-                                    Logout
-                                </button>
-                            </form>
-                        </div>
                     </div>
                 </div>
+
+                <!--
+                    Mobile nav: hidden from `md` up, where the desktop links above
+                    take over. The links are the same four sections and the same
+                    active-state rules, rendered by `primary_nav_links`.
+                -->
+                <div id="mobile-menu"
+                     x-show="mobileOpen"
+                     x-cloak
+                     class="md:hidden border-t border-gray-100 py-3 space-y-1">
+                    {{ primary_nav_links(request.blueprint, mobile=True) }}
+                </div>
             </div>
-        </nav>
+        </div>
+    </nav>
 
         <!-- Flash Messages -->
     {% with messages = get_flashed_messages(with_categories=true) %}
