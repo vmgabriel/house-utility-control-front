@@ -12,8 +12,12 @@ import inspect
 import pytest
 
 from src.budget.domain.ports import (
+    CreditCardPaymentPort,
     DashboardRepositoryPort,
     TransactionRepositoryPort,
+)
+from src.budget.infrastructure.repositories.credit_card_payment_repository import (
+    DRFCreditCardPaymentRepository,
 )
 from src.budget.infrastructure.repositories.dashboard_repository import (
     DRFDashboardRepository,
@@ -40,6 +44,7 @@ PAIRS = [
     (AuthRepositoryPort, DRFAuthRepository),
     (TransactionRepositoryPort, DRFTransactionRepository),
     (DashboardRepositoryPort, DRFDashboardRepository),
+    (CreditCardPaymentPort, DRFCreditCardPaymentRepository),
     # The tasks adapter goes through the same positional-token contract as every
     # other one, because `AutoRefreshingRepository` substitutes a refreshed JWT
     # into `args[0]`. That makes the parameter *order* load-bearing here, which

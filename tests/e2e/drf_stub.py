@@ -268,6 +268,10 @@ class StubBackend:
         #: Analytics rows per `group_by`. The response method wraps these with
         #: the requested `period`/`group_by`, mirroring the backend.
         self.analytics_rows: dict[str, list[dict]] = {}
+        #: Analytics rows per account, then per `group_by`. Used when a request
+        #: carries `account_id`, so the dashboard's per-account filter can be
+        #: exercised with visibly different series.
+        self.analytics_account_rows: dict[str, dict[str, list[dict]]] = {}
         #: Whether the fake LLM provider answers. False makes the health probe,
         #: both task triggers, and daily-plan generation answer 503, which is how
         #: the real backend reports an unreachable provider.
@@ -313,6 +317,7 @@ class StubBackend:
                 "type": deepcopy(DEFAULT_TYPE_ANALYTICS_ROWS),
                 "category": deepcopy(DEFAULT_CATEGORY_ANALYTICS_ROWS),
             }
+            self.analytics_account_rows = {}
             self.llm_available = True
             self.add_daily_plan_task_conflict = None
             self.transition_failure = None
@@ -454,17 +459,52 @@ class StubBackend:
         return StubResponse(201, row)
 
     def _analytics_response(self, recorded: RecordedRequest) -> StubResponse:
-        """`GET /transactions/analytics/` -- echo the requested shape."""
+        """`GET /transactions/analytics/` -- echo the requested shape.
+
+        When the request carries `account_id`, rows seeded for that account win.
+        Seeded per-account rows are optional, so a test that only cares that the
+        query parameter was forwarded still gets the default series.
+        """
         group_by = recorded.query.get("group_by", "type")
         period = recorded.query.get("period", "monthly")
         if group_by not in {"type", "category"}:
             return StubResponse(400, {"detail": "Unknown group_by."})
         if period not in {"daily", "weekly", "monthly"}:
             return StubResponse(400, {"detail": "Unknown period."})
+        account_id = recorded.query.get("account_id")
         rows = self.analytics_rows.get(group_by, [])
+        if account_id:
+            rows = self.analytics_account_rows.get(account_id, {}).get(group_by, rows)
         return StubResponse(
             200,
             {"period": period, "group_by": group_by, "data": deepcopy(rows)},
+        )
+
+    def _pay_credit_card_response(self, recorded: RecordedRequest) -> StubResponse:
+        """`POST /accounts/<id>/pay-credit-card/` -- echo the confirmation.
+
+        The stub does not re-implement the backend's ledger rules: it applies
+        the payment the test asked for and echoes the same four fields
+        ``CreditCardPaymentSerializer`` returns.
+        """
+        card_id = recorded.path.removeprefix("/accounts/").removesuffix(
+            "/pay-credit-card/"
+        )
+        payload = recorded.json if isinstance(recorded.json, dict) else {}
+        funding_account_id = payload.get("funding_account_id")
+        amount = payload.get("amount")
+        if not funding_account_id or amount is None:
+            return StubResponse(
+                400, {"detail": "funding_account_id and amount are required."}
+            )
+        return StubResponse(
+            200,
+            {
+                "detail": "Credit card payment completed.",
+                "account_id": card_id,
+                "funding_account_id": funding_account_id,
+                "amount": amount,
+            },
         )
 
     def _profile_response(self, _recorded: RecordedRequest) -> StubResponse:
@@ -559,6 +599,9 @@ class StubBackend:
             "POST", "/transactions/accounts/", self._create_funding_account_response
         )
         self.on_call("GET", "/transactions/analytics/", self._analytics_response)
+        self.on_call(
+            "POST", "/accounts/<id>/pay-credit-card/", self._pay_credit_card_response
+        )
         self.on_call("GET", "/dashboard/overview/", self._overview_response)
         self.on_call("GET", "/profile/me/", self._profile_response)
         self.on_call("PATCH", "/profile/me/", self._update_profile_response)
@@ -1175,6 +1218,12 @@ class StubBackend:
                 route = self._routes.get(("*", "/transactions/<id>/"))
             if (
                 route is None
+                and path.startswith("/accounts/")
+                and path.endswith("/pay-credit-card/")
+            ):
+                route = self._routes.get(("POST", "/accounts/<id>/pay-credit-card/"))
+            if (
+                route is None
                 and path.startswith("/users/")
                 and not path.startswith("/users/auth/")
                 and path.count("/") == 3
@@ -1302,6 +1351,14 @@ class StubDRFServer:
     def seed_analytics(self, group_by: str, *rows: dict) -> None:
         """Replace the analytics rows for one `group_by` value."""
         self.backend.analytics_rows[group_by] = [deepcopy(row) for row in rows]
+
+    def seed_analytics_for_account(
+        self, account_id: str, group_by: str, *rows: dict
+    ) -> None:
+        """Replace the analytics rows served when `account_id` is requested."""
+        self.backend.analytics_account_rows.setdefault(account_id, {})[group_by] = [
+            deepcopy(row) for row in rows
+        ]
 
     @property
     def funding_accounts(self) -> list[dict]:

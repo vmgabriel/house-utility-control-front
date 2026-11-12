@@ -11,6 +11,7 @@ from .dashboard import (
     GetDashboardOverviewUseCase,
     GetDashboardSummariesUseCase,
 )
+from .payments import PayCreditCardUseCase
 from .transactions import (
     CreateTransactionUseCase,
     DeleteTransactionUseCase,
@@ -30,4 +31,5 @@ __all__ = [
     "GetFundingAccountsUseCase",
     "CreateFundingAccountUseCase",
     "GetTransactionAnalyticsUseCase",
+    "PayCreditCardUseCase",
 ]

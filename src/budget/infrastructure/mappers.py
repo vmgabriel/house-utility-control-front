@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from src.budget.domain.entities import (
     AnalyticsRow,
+    CreditCardPayment,
     DashboardOverview,
     DashboardSummary,
     FundingAccount,
@@ -23,6 +24,7 @@ from src.budget.domain.value_objects import (
 
 from .schemas import (
     DRFAnalyticsResponse,
+    DRFCreditCardPaymentResponse,
     DRFDashboardOverviewResponse,
     DRFDashboardSummaryResponse,
     DRFFundingAccountResponse,
@@ -166,6 +168,27 @@ def map_funding_account_response(
 def funding_account_to_drf_payload(account: FundingAccount) -> dict:
     """Build the ``CreateAccountSerializer`` body for a new account."""
     return {"name": account.name, "account_type": account.account_type.value}
+
+
+def credit_card_payment_to_drf_payload(funding_account_id: str, amount: str) -> dict:
+    """Build the ``PayCreditCardSerializer`` body.
+
+    The card being settled is addressed in the URL, so only the funding
+    account and the amount belong in the request body.
+    """
+    return {"funding_account_id": funding_account_id, "amount": amount}
+
+
+def map_credit_card_payment_response(
+    payment_data: DRFCreditCardPaymentResponse,
+) -> CreditCardPayment:
+    """Map the backend's payment confirmation onto the domain read model."""
+    return CreditCardPayment(
+        detail=payment_data.detail,
+        account_id=AccountId(payment_data.account_id),
+        funding_account_id=AccountId(payment_data.funding_account_id),
+        amount=Money(Decimal(payment_data.amount)),
+    )
 
 
 #: The full type palette, in the order the backend's own charts use. Kept here

@@ -23,6 +23,7 @@ class DRFAnalyticsRepository:
         end_date: date,
         group_by: AnalyticsGroupBy,
         period: AnalyticsPeriod,
+        account_id: str | None = None,
     ) -> TransactionAnalytics:
         data = await self.api_client.get_transaction_analytics(
             access_token,
@@ -30,6 +31,7 @@ class DRFAnalyticsRepository:
             end_date.isoformat(),
             group_by.value,
             period.value,
+            account_id,
         )
         return map_analytics_response(DRFAnalyticsResponse.model_validate(data))
 

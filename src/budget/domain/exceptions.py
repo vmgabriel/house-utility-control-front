@@ -26,3 +26,7 @@ class InvalidAccountNameError(DomainException):
 
 class TransactionNotFoundError(DomainException):
     """Raised when a transaction is not found."""
+
+
+class InvalidPaymentAmountError(DomainException):
+    """Raised when a credit-card payment amount is missing or invalid."""

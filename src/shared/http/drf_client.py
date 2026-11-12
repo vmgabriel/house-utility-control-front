@@ -535,6 +535,36 @@ class DRFAPIClient:
             )
         return body
 
+    async def pay_credit_card(
+        self, access_token: str, account_id: str, payload: dict
+    ) -> dict:
+        """Settle a credit card; answers 200 with the echoed confirmation.
+
+        Paying is an account action on the backend, so the card id is part of
+        the path rather than the body. The 400/404 mapping matches the view:
+        a validation failure is actionable, while a missing or foreign account
+        is deliberately indistinguishable from not existing.
+        """
+        status, body = await self._request(
+            "POST",
+            f"/accounts/{account_id}/pay-credit-card/",
+            access_token=access_token,
+            json_data=payload,
+        )
+        if status == 404:
+            raise NotFoundError("Account not found", status_code=404)
+        if status == 400:
+            raise ValidationError(
+                "Credit card payment validation failed", status_code=400, detail=body
+            )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to pay credit card", status_code=status, detail=body
+            )
+        return body
+
     async def get_transaction_analytics(
         self,
         access_token: str,
@@ -542,26 +572,36 @@ class DRFAPIClient:
         end_date: str,
         group_by: str,
         period: str,
+        account_id: str | None = None,
     ) -> dict:
         """Fetch bounded, chart-ready aggregates.
 
         Every argument is a plain string: this client is the shared kernel and
         imports nothing from the budget vocabulary, so the adapter formats the
-        dates and unwraps the enums before calling in.
+        dates and unwraps the enums before calling in. ``account_id`` is sent
+        only when the caller filtered to one account, so the unfiltered request
+        keeps its original shape. A 404 (the backend maps a foreign account to
+        a missing one) surfaces as ``NotFoundError`` so callers can answer 404
+        instead of a generic failure.
         """
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "group_by": group_by,
+            "period": period,
+        }
+        if account_id:
+            params["account_id"] = account_id
         status, body = await self._request(
             "GET",
             "/transactions/analytics/",
             access_token=access_token,
-            params={
-                "start_date": start_date,
-                "end_date": end_date,
-                "group_by": group_by,
-                "period": period,
-            },
+            params=params,
         )
         if status == 401:
             raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Account not found", status_code=404)
         if status >= 400:
             raise DRFAPIClientError(
                 "Failed to fetch transaction analytics",

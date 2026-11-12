@@ -24,10 +24,12 @@ from src.budget.application.use_cases import (
     GetFundingAccountsUseCase,
     GetTransactionAnalyticsUseCase,
     GetTransactionUseCase,
+    PayCreditCardUseCase,
     UpdateTransactionUseCase,
 )
 from src.budget.infrastructure.repositories import (
     DRFAnalyticsRepository,
+    DRFCreditCardPaymentRepository,
     DRFDashboardRepository,
     DRFFundingAccountRepository,
     DRFTransactionRepository,
@@ -153,6 +155,7 @@ def create_app() -> Flask:
     dashboard_repo = DRFDashboardRepository(api_client)
     funding_account_repo = DRFFundingAccountRepository(api_client)
     analytics_repo = DRFAnalyticsRepository(api_client)
+    credit_card_payment_repo = DRFCreditCardPaymentRepository(api_client)
     profile_repo = DRFProfileRepository(api_client)
     user_repo = DRFUserRepository(api_client)
     rentals_client = DrfRentalsClient(api_client)
@@ -245,6 +248,7 @@ def create_app() -> Flask:
     safe_dashboard_repo = refreshing(dashboard_repo)
     safe_funding_account_repo = refreshing(funding_account_repo)
     safe_analytics_repo = refreshing(analytics_repo)
+    safe_credit_card_payment_repo = refreshing(credit_card_payment_repo)
     safe_profile_repo = refreshing(profile_repo)
     safe_user_repo = refreshing(user_repo)
     # Rentals goes through the same proxy. Its adapter methods take the access
@@ -294,6 +298,9 @@ def create_app() -> Flask:
     )
     app.get_transaction_analytics_use_case = GetTransactionAnalyticsUseCase(
         analytics_repository=safe_analytics_repo
+    )
+    app.pay_credit_card_use_case = PayCreditCardUseCase(
+        payment_repository=safe_credit_card_payment_repo
     )
     app.get_profile_use_case = GetProfileUseCase(repository=safe_profile_repo)
     app.update_profile_use_case = UpdateProfileUseCase(repository=safe_profile_repo)

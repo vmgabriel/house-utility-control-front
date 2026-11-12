@@ -21,8 +21,9 @@ class GetTransactionAnalyticsUseCase:
         end_date: date,
         group_by: AnalyticsGroupBy,
         period: AnalyticsPeriod,
+        account_id: str | None = None,
     ) -> TransactionAnalytics:
         """Aggregate a bounded date range into chart-ready rows."""
         return await self.analytics_repository.get_analytics(
-            access_token, start_date, end_date, group_by, period
+            access_token, start_date, end_date, group_by, period, account_id
         )

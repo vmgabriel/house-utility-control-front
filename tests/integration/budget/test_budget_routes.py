@@ -23,6 +23,8 @@ ACCOUNTS_URL = f"{BASE}/transactions/accounts/"
 ANALYTICS_URL = f"{BASE}/transactions/analytics/"
 OVERVIEW_URL = f"{BASE}/dashboard/overview/"
 CREATE_ACCOUNT_PATH = "/budget/accounts/create"
+PAY_CARD_PATH = "/dashboard/pay-card"
+PAY_CREDIT_CARD_URL = f"{BASE}/accounts/acc-1/pay-credit-card/"
 
 
 @pytest.fixture
@@ -109,6 +111,70 @@ class TestAnalyticsData:
         # A bounded range is always sent; the backend caps it at 366 days.
         assert params["start_date"]
         assert params["end_date"]
+
+    @respx.mock
+    def test_forwards_a_selected_account_to_the_backend(self, client):
+        authenticate(client)
+        route = respx.get(ANALYTICS_URL).mock(
+            return_value=httpx.Response(
+                200, json={"period": "monthly", "group_by": "type", "data": []}
+            )
+        )
+
+        response = client.get(
+            "/budget/analytics/data/?period=monthly&group_by=type&account_id=acc-1"
+        )
+
+        assert response.status_code == 200
+        assert route.calls[0].request.url.params["account_id"] == "acc-1"
+
+    @respx.mock
+    def test_omits_account_id_when_no_account_is_selected(self, client):
+        authenticate(client)
+        route = respx.get(ANALYTICS_URL).mock(
+            return_value=httpx.Response(
+                200, json={"period": "monthly", "group_by": "type", "data": []}
+            )
+        )
+
+        response = client.get("/budget/analytics/data/?period=monthly&group_by=type")
+
+        assert response.status_code == 200
+        assert "account_id" not in route.calls[0].request.url.params
+
+    @respx.mock
+    def test_propagates_the_grouping_toggle_to_the_backend(self, client):
+        """The dashboard sends `grouping`; the backend contract is `group_by`."""
+        authenticate(client)
+        route = respx.get(ANALYTICS_URL).mock(
+            return_value=httpx.Response(
+                200, json={"period": "daily", "group_by": "category", "data": []}
+            )
+        )
+
+        response = client.get("/budget/analytics/data/?period=daily&grouping=category")
+
+        assert response.status_code == 200
+        params = route.calls[0].request.url.params
+        assert params["period"] == "daily"
+        assert params["group_by"] == "category"
+
+    @respx.mock
+    def test_a_foreign_or_missing_account_answers_404(self, client):
+        authenticate(client)
+        respx.get(ANALYTICS_URL).mock(
+            return_value=httpx.Response(404, json={"detail": "Not found."})
+        )
+
+        response = client.get(
+            "/budget/analytics/data/"
+            "?period=monthly&grouping=type&account_id=acc-ghost"
+        )
+
+        # The status must reach the browser as a 404 so the dashboard shows
+        # "Cuenta no disponible" instead of a silently empty chart.
+        assert response.status_code == 404
+        assert response.get_json()["detail"]
 
     @respx.mock
     def test_invalid_toggles_fall_back_to_the_defaults(self, client):
@@ -255,6 +321,278 @@ class TestDashboardConsolidation:
     def test_the_standalone_accounts_page_is_gone(self, client):
         authenticate(client)
         assert client.get("/budget/accounts/").status_code == 404
+
+    @respx.mock
+    def test_renders_the_account_selector_and_payment_controls(self, client):
+        authenticate(client)
+        respx.get(OVERVIEW_URL).mock(return_value=empty_overview_response())
+        respx.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 2,
+                    "results": [
+                        {
+                            "id": "acc-card",
+                            "name": "Visa Rewards",
+                            "account_type": "credit_card",
+                            "is_active": True,
+                        },
+                        {
+                            "id": "acc-debit",
+                            "name": "Everyday",
+                            "account_type": "debit",
+                            "is_active": True,
+                        },
+                    ],
+                },
+            )
+        )
+
+        response = client.get("/dashboard/")
+        body = response.get_data(as_text=True)
+
+        assert response.status_code == 200
+        # The chart selector lists "All accounts" plus every active account.
+        assert 'data-testid="account-filter"' in body
+        assert '<option value="">All accounts</option>' in body
+        assert '<option value="acc-card">Visa Rewards</option>' in body
+        assert '<option value="acc-debit">Everyday</option>' in body
+
+        # A credit card exists, so the payment button and dialog are rendered.
+        assert 'data-testid="pay-card"' in body
+        assert 'data-testid="payment-modal"' in body
+        assert 'action="/dashboard/pay-card"' in body
+        # The funding dropdown only offers debit/savings accounts.
+        assert "Everyday (Debit)" in body
+        assert "Visa Rewards (Credit card)" not in body
+
+    @respx.mock
+    def test_a_selected_account_is_reflected_in_the_analytics_scope(self, client):
+        authenticate(client)
+        respx.get(OVERVIEW_URL).mock(return_value=empty_overview_response())
+        respx.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "acc-card",
+                            "name": "Visa Rewards",
+                            "account_type": "credit_card",
+                            "is_active": True,
+                        }
+                    ],
+                },
+            )
+        )
+
+        response = client.get("/dashboard/?account_id=acc-card")
+        body = response.get_data(as_text=True)
+
+        assert response.status_code == 200
+        assert 'data-selected-account="acc-card"' in body
+        # The modal opens on the card named in the URL.
+        assert 'data-default-card-id="acc-card"' in body
+
+    @respx.mock
+    def test_no_payment_controls_without_a_credit_card(self, client):
+        authenticate(client)
+        respx.get(OVERVIEW_URL).mock(return_value=empty_overview_response())
+        respx.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "acc-debit",
+                            "name": "Everyday",
+                            "account_type": "debit",
+                            "is_active": True,
+                        }
+                    ],
+                },
+            )
+        )
+
+        response = client.get("/dashboard/")
+        body = response.get_data(as_text=True)
+
+        assert response.status_code == 200
+        assert 'data-testid="pay-card"' not in body
+        assert 'data-testid="payment-modal"' not in body
+
+    @respx.mock
+    def test_a_card_without_a_funding_account_explains_the_blocker(self, client):
+        authenticate(client)
+        respx.get(OVERVIEW_URL).mock(return_value=empty_overview_response())
+        respx.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [
+                        {
+                            "id": "acc-card",
+                            "name": "Visa Rewards",
+                            "account_type": "credit_card",
+                            "is_active": True,
+                        }
+                    ],
+                },
+            )
+        )
+
+        response = client.get("/dashboard/")
+
+        assert response.status_code == 200
+        assert b"No debit or savings account is available" in response.data
+        assert b'action="/dashboard/pay-card"' not in response.data
+
+
+class TestPayCreditCard:
+    @respx.mock
+    def test_posts_the_payment_and_flashes_success(self, client, csrf_token):
+        authenticate(client)
+        route = respx.post(PAY_CREDIT_CARD_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "detail": "Credit card payment completed.",
+                    "account_id": "acc-1",
+                    "funding_account_id": "acc-debit",
+                    "amount": "125.50",
+                },
+            )
+        )
+
+        response = client.post(
+            PAY_CARD_PATH,
+            data={
+                "account_id": "acc-1",
+                "funding_account_id": "acc-debit",
+                "amount": "125.5",
+                "csrf_token": csrf_token,
+            },
+        )
+
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/dashboard/?account_id=acc-1")
+        body = json.loads(route.calls[0].request.content)
+        # Matches PayCreditCardSerializer; the card id is in the URL.
+        assert body == {"funding_account_id": "acc-debit", "amount": "125.50"}
+
+        mock_dashboard_load()
+        followed = client.get(response.headers["Location"])
+        assert b"Credit card payment completed!" in followed.data
+
+    @respx.mock
+    def test_requires_csrf(self, client):
+        authenticate(client)
+        route = respx.post(PAY_CREDIT_CARD_URL).mock(
+            return_value=httpx.Response(200, json={})
+        )
+
+        response = client.post(
+            PAY_CARD_PATH,
+            data={
+                "account_id": "acc-1",
+                "funding_account_id": "acc-debit",
+                "amount": "125.50",
+            },
+        )
+
+        assert response.status_code == 302
+        assert not route.called
+        mock_dashboard_load()
+        followed = client.get(response.headers["Location"])
+        assert b"Invalid or expired CSRF token." in followed.data
+
+    @respx.mock
+    def test_rejects_an_invalid_amount_before_calling_drf(self, client, csrf_token):
+        authenticate(client)
+        route = respx.post(PAY_CREDIT_CARD_URL).mock(
+            return_value=httpx.Response(200, json={})
+        )
+
+        response = client.post(
+            PAY_CARD_PATH,
+            data={
+                "account_id": "acc-1",
+                "funding_account_id": "acc-debit",
+                "amount": "0",
+                "csrf_token": csrf_token,
+            },
+        )
+
+        assert response.status_code == 302
+        assert not route.called
+        mock_dashboard_load()
+        followed = client.get(response.headers["Location"])
+        assert b"Payment amount must be greater than zero." in followed.data
+
+    @respx.mock
+    def test_requires_a_card_and_a_funding_account(self, client, csrf_token):
+        authenticate(client)
+        route = respx.post(PAY_CREDIT_CARD_URL).mock(
+            return_value=httpx.Response(200, json={})
+        )
+
+        response = client.post(
+            PAY_CARD_PATH,
+            data={
+                "account_id": "",
+                "funding_account_id": "acc-debit",
+                "amount": "10.00",
+                "csrf_token": csrf_token,
+            },
+        )
+
+        assert response.status_code == 302
+        assert not route.called
+        mock_dashboard_load()
+        followed = client.get(response.headers["Location"])
+        assert b"Choose a credit card and a funding account." in followed.data
+
+    @respx.mock
+    def test_surfaces_a_backend_rejection(self, client, csrf_token):
+        authenticate(client)
+        respx.post(PAY_CREDIT_CARD_URL).mock(
+            return_value=httpx.Response(
+                400, json={"detail": "Account is not a credit card."}
+            )
+        )
+
+        response = client.post(
+            PAY_CARD_PATH,
+            data={
+                "account_id": "acc-1",
+                "funding_account_id": "acc-debit",
+                "amount": "125.50",
+                "csrf_token": csrf_token,
+            },
+        )
+
+        assert response.status_code == 302
+        mock_dashboard_load()
+        followed = client.get(response.headers["Location"])
+        assert b"Credit card payment validation failed" in followed.data
+        assert b"Credit card payment completed!" not in followed.data
+
+    def test_requires_authentication(self, client, csrf_token):
+        response = client.post(
+            PAY_CARD_PATH,
+            data={
+                "account_id": "acc-1",
+                "funding_account_id": "acc-debit",
+                "amount": "125.50",
+                "csrf_token": csrf_token,
+            },
+        )
+        assert response.status_code == 302
+        assert "/auth/login" in response.headers["Location"]
 
 
 class TestCreateFundingAccount:

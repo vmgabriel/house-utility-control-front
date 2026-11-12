@@ -79,10 +79,11 @@ class TestDashboardAnalytics:
         page.goto("/dashboard/")
         expect_path(page, "/auth/login")
 
-    def test_renders_live_bar_and_pie_charts(self, page: Page, authed: Page, mock_drf):
+    def test_renders_the_live_bar_chart_and_the_pie_on_toggle(
+        self, page: Page, authed: Page, mock_drf
+    ):
         page.goto("/dashboard/")
         wait_for_chart(page, "barChart")
-        wait_for_chart(page, "pieChart")
 
         bar = chart_snapshot(page, "barChart")
         assert bar is not None
@@ -93,17 +94,22 @@ class TestDashboardAnalytics:
         # First bucket: income 1000, expense 400, investment 50, savings 100.
         assert bar["firstData"] == [1000.0, 400.0, 50.0, 100.0]
 
+        # The type panel is the default; the category series is fetched and
+        # drawn only once its toggle is selected.
+        expect(page.get_by_test_id("bar-chart")).to_be_visible()
+        expect(page.get_by_test_id("pie-chart")).to_be_hidden()
+
+        page.get_by_test_id("group-category").click()
+        wait_for_chart(page, "pieChart")
+
         pie = chart_snapshot(page, "pieChart")
         assert pie is not None
         assert pie["type"] == "pie"
         # The adapter sorts categories by descending total before rendering.
         assert pie["labels"] == ["Housing", "Food", "Transport"]
         assert pie["datasetLabels"] == ["Expenses by category"]
-
-        # The type panel is the default; the category panel stays hidden until
-        # its toggle is selected.
-        expect(page.get_by_test_id("bar-chart")).to_be_visible()
-        expect(page.get_by_test_id("pie-chart")).to_be_hidden()
+        expect(page.get_by_test_id("pie-chart")).to_be_visible()
+        expect(page.get_by_test_id("bar-chart")).to_be_hidden()
 
     def test_the_section_sits_below_the_summary_cards(
         self, page: Page, authed: Page, mock_drf
@@ -130,7 +136,7 @@ class TestDashboardAnalytics:
         expect(page.get_by_test_id("pie-chart")).to_be_visible()
         expect(page.get_by_test_id("bar-chart")).to_be_hidden()
 
-    def test_switching_grouping_measures_the_hidden_pie_chart(
+    def test_switching_grouping_measures_the_new_pie_chart(
         self, page: Page, authed: Page, mock_drf
     ):
         page.goto("/dashboard/")
@@ -139,9 +145,9 @@ class TestDashboardAnalytics:
         page.get_by_test_id("group-category").click()
         wait_for_chart(page, "pieChart")
 
-        # The pie chart is created while its panel is hidden by `x-show`, so
-        # Chart.js measures a zero-sized canvas until the panel becomes visible.
-        # Without a resize on the toggle, the canvas stays blank.
+        # Every load destroys the previous chart and builds a fresh one; the
+        # new instance must be measured against a visible canvas, or Chart.js
+        # keeps a zero size and the panel stays blank.
         page.wait_for_function("""() => {
                 const chart = Chart.getChart(document.getElementById('pieChart'));
                 return chart && chart.width > 0 && chart.height > 0;
@@ -167,7 +173,7 @@ class TestDashboardAnalytics:
                 return Chart.getChart(canvas) === undefined;
             }""")
 
-    def test_switching_period_refetches_both_series(
+    def test_switching_period_refetches_the_chart(
         self, page: Page, authed: Page, mock_drf
     ):
         # A day-shaped label only parses as daily, so the redraw is observable:
@@ -185,26 +191,25 @@ class TestDashboardAnalytics:
                 }
             ],
         )
-        mock_drf_analytics(mock_drf, "category", [{"label": "Food", "total": "2.00"}])
 
         page.goto("/dashboard/")
-        wait_for_analytics_calls(mock_drf, 2)
+        wait_for_analytics_calls(mock_drf, 1)
         page.wait_for_function(
             """() => Chart.getChart(document.getElementById('barChart'))
                      ?.data.labels[0] === '2026-09-26'"""
         )
 
         page.get_by_test_id("period-daily").click()
-        wait_for_analytics_calls(mock_drf, 4)
+        wait_for_analytics_calls(mock_drf, 2)
         page.wait_for_function(
             """() => Chart.getChart(document.getElementById('barChart'))
                      ?.data.labels[0] === 'Sep 26'"""
         )
 
         calls = mock_drf.calls("GET", ANALYTICS_PATH)
-        # One fetch per grouping, both for the newly selected period.
-        assert [call.query["period"] for call in calls[-2:]] == ["daily", "daily"]
-        assert {call.query["group_by"] for call in calls[-2:]} == {"type", "category"}
+        # One fetch per control change, for the grouping currently on screen.
+        assert calls[-1].query["period"] == "daily"
+        assert calls[-1].query["group_by"] == "type"
 
     def test_reports_a_backend_failure(self, page: Page, authed: Page, mock_drf):
         mock_drf.on(
@@ -382,3 +387,212 @@ class TestTransactionAccountSelector:
         calls = mock_drf.calls("POST", "/transactions/")
         assert len(calls) == 1
         assert calls[0].json["account_id"] == "acc-1"
+
+
+class TestDashboardAccountFilter:
+    def test_selecting_an_account_refetches_the_chart_for_it(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_funding_accounts(
+            mock_drf,
+            [
+                {
+                    "id": "acc-debit",
+                    "name": "Everyday",
+                    "account_type": "debit",
+                    "is_active": True,
+                },
+                {
+                    "id": "acc-card",
+                    "name": "Visa Rewards",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                },
+            ],
+        )
+        mock_drf.seed_analytics_for_account(
+            "acc-card",
+            "type",
+            {
+                "label": "2026-09",
+                "income": "10.00",
+                "expense": "5.00",
+                "investment": "0.00",
+                "savings": "0.00",
+            },
+        )
+
+        page.goto("/dashboard/")
+        wait_for_analytics_calls(mock_drf, 1)
+
+        page.get_by_test_id("account-filter").select_option("acc-card")
+        wait_for_analytics_calls(mock_drf, 2)
+
+        calls = mock_drf.calls("GET", ANALYTICS_PATH)
+        # The visible series is refetched for the selected account, so the
+        # chart never shows data from the previously selected scope.
+        assert calls[-1].query.get("account_id") == "acc-card"
+        page.wait_for_function(
+            """() => Chart.getChart(document.getElementById('barChart'))
+                     ?.data.labels[0] === 'Sep 2026'"""
+        )
+
+    def test_a_foreign_account_is_reported_as_unavailable(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_funding_accounts(
+            mock_drf,
+            [
+                {
+                    "id": "acc-ghost",
+                    "name": "Deleted card",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                }
+            ],
+        )
+
+        page.goto("/dashboard/")
+        wait_for_chart(page, "barChart")
+
+        # The backend answers 404 for an account that is foreign or gone;
+        # later-registered stubs win over the seeded handler.
+        mock_drf.on("GET", ANALYTICS_PATH, StubResponse(404, {"detail": "Not found."}))
+        page.get_by_test_id("account-filter").select_option("acc-ghost")
+
+        error = page.get_by_test_id("analytics-error")
+        expect(error).to_be_visible()
+        expect(error).to_have_text("Cuenta no disponible")
+        # The stale chart is destroyed rather than left silently on screen.
+        page.wait_for_function(
+            """() => Chart.getChart(document.getElementById('barChart'))
+                     === undefined"""
+        )
+
+    def test_the_url_preloads_the_selected_account(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_funding_accounts(
+            mock_drf,
+            [
+                {
+                    "id": "acc-card",
+                    "name": "Visa Rewards",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                }
+            ],
+        )
+
+        page.goto("/dashboard/?account_id=acc-card")
+        wait_for_analytics_calls(mock_drf, 1)
+
+        expect(page.get_by_test_id("account-filter")).to_have_value("acc-card")
+        calls = mock_drf.calls("GET", ANALYTICS_PATH)
+        assert calls[0].query.get("account_id") == "acc-card"
+
+
+class TestDashboardPayCard:
+    def test_the_header_button_opens_the_modal_and_posts_the_payment(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_funding_accounts(
+            mock_drf,
+            [
+                {
+                    "id": "acc-card",
+                    "name": "Visa Rewards",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                },
+                {
+                    "id": "acc-debit",
+                    "name": "Everyday",
+                    "account_type": "debit",
+                    "is_active": True,
+                },
+            ],
+        )
+
+        page.goto("/dashboard/")
+        page.get_by_test_id("pay-card").click()
+
+        modal = page.get_by_test_id("payment-modal")
+        expect(modal).to_be_visible()
+        modal.get_by_label("Credit card").select_option("acc-card")
+        modal.get_by_label("Pay from").select_option("acc-debit")
+        modal.get_by_label("Amount").fill("125.50")
+        modal.get_by_role("button", name="Pagar Tarjeta").click()
+
+        expect_path(page, "/dashboard/?account_id=acc-card")
+        expect(page.get_by_text("Credit card payment completed!")).to_be_visible()
+
+        calls = mock_drf.calls("POST", "/accounts/acc-card/pay-credit-card/")
+        assert len(calls) == 1
+        # Matches PayCreditCardSerializer: the card id is in the URL, so the
+        # body only carries the funding account and the amount.
+        assert calls[0].json == {
+            "funding_account_id": "acc-debit",
+            "amount": "125.50",
+        }
+
+    def test_a_card_row_opens_the_modal_on_that_card(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_funding_accounts(
+            mock_drf,
+            [
+                {
+                    "id": "acc-visa",
+                    "name": "Visa Rewards",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                },
+                {
+                    "id": "acc-amex",
+                    "name": "Amex Gold",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                },
+                {
+                    "id": "acc-debit",
+                    "name": "Everyday",
+                    "account_type": "debit",
+                    "is_active": True,
+                },
+            ],
+        )
+
+        page.goto("/dashboard/")
+        open_accounts_modal(page)
+        row = page.get_by_test_id("funding-account").filter(has_text="Amex Gold")
+        row.get_by_test_id("pay-card-account").click()
+
+        modal = page.get_by_test_id("payment-modal")
+        expect(modal).to_be_visible()
+        # The row sets the card, so the user does not have to pick it again.
+        expect(modal.get_by_label("Credit card")).to_have_value("acc-amex")
+
+    def test_a_card_without_a_funding_account_explains_the_blocker(
+        self, page: Page, authed: Page, mock_drf
+    ):
+        mock_drf_funding_accounts(
+            mock_drf,
+            [
+                {
+                    "id": "acc-card",
+                    "name": "Visa Rewards",
+                    "account_type": "credit_card",
+                    "is_active": True,
+                }
+            ],
+        )
+
+        page.goto("/dashboard/")
+        page.get_by_test_id("pay-card").click()
+
+        modal = page.get_by_test_id("payment-modal")
+        expect(modal).to_be_visible()
+        expect(
+            modal.get_by_text("No debit or savings account is available")
+        ).to_be_visible()

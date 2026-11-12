@@ -4,6 +4,7 @@ from datetime import date
 from typing import Protocol
 
 from .entities import (
+    CreditCardPayment,
     DashboardOverview,
     FundingAccount,
     Transaction,
@@ -94,6 +95,25 @@ class AnalyticsRepositoryPort(Protocol):
         end_date: date,
         group_by: AnalyticsGroupBy,
         period: AnalyticsPeriod,
+        account_id: str | None = None,
     ) -> TransactionAnalytics:
-        """Aggregate a bounded date range into chart-ready rows."""
+        """Aggregate a bounded date range into chart-ready rows.
+
+        ``account_id`` optionally restricts the aggregation to one funding
+        account owned by the caller. ``None`` aggregates every account.
+        """
+        ...
+
+
+class CreditCardPaymentPort(Protocol):
+    """Port for settling a credit card from one of the caller's accounts."""
+
+    async def pay_credit_card(
+        self,
+        access_token: str,
+        account_id: str,
+        funding_account_id: str,
+        amount: str,
+    ) -> CreditCardPayment:
+        """Post a payment and return the backend's confirmation."""
         ...

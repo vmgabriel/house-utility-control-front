@@ -131,3 +131,18 @@ class TransactionAnalytics:
     period: AnalyticsPeriod
     group_by: AnalyticsGroupBy
     rows: list[AnalyticsRow]
+
+
+@dataclass(frozen=True, slots=True)
+class CreditCardPayment:
+    """The backend's confirmation of a settled credit-card payment.
+
+    A read model rather than an entity: the backend owns the two ledger rows the
+    payment creates, and the dashboard only needs the values it echoed back in
+    order to confirm the operation to the user.
+    """
+
+    detail: str
+    account_id: AccountId
+    funding_account_id: AccountId
+    amount: Money

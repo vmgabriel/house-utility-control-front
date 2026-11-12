@@ -29,7 +29,7 @@ from src.budget.domain.value_objects import (
 from src.budget.interfaces.viewmodels import AnalyticsViewModel
 from src.shared.auth.csrf import CSRFTokenManager
 from src.shared.auth.jwt_cookie_manager import JWTCookieManager
-from src.shared.http.drf_client import ServiceUnavailableError
+from src.shared.http.drf_client import NotFoundError, ServiceUnavailableError
 
 budget_bp = Blueprint("budget", __name__, url_prefix="/budget")
 
@@ -123,18 +123,30 @@ async def analytics_data():
         return jsonify({"detail": "Authentication required."}), 401
 
     period = _parse_period(request.args.get("period"))
-    group_by = _parse_group_by(request.args.get("group_by"))
+    # The dashboard toggle is named `grouping`; `group_by` is the legacy alias
+    # (and the backend's own parameter name), so hand-edited URLs and older
+    # bookmarks resolve to the same enum. Invalid or missing values fall back
+    # per toggle rather than erroring.
+    group_by = _parse_group_by(
+        request.args.get("grouping") or request.args.get("group_by")
+    )
     start_date, end_date = _requested_range(period)
+    account_id = (request.args.get("account_id") or "").strip() or None
 
     use_case: GetTransactionAnalyticsUseCase = (
         current_app.get_transaction_analytics_use_case
     )
     try:
         analytics_result = await use_case.execute(
-            access_token, start_date, end_date, group_by, period
+            access_token, start_date, end_date, group_by, period, account_id
         )
     except ServiceUnavailableError:
         raise
+    except NotFoundError:
+        # The backend answers 404 for an account that is foreign or gone; pass
+        # the status through so the dashboard says "Cuenta no disponible"
+        # instead of drawing a chart that silently shows nothing.
+        return jsonify({"detail": "Account not available."}), 404
     except DomainException:
         return jsonify({"detail": "Analytics could not be loaded."}), 502
     except Exception:

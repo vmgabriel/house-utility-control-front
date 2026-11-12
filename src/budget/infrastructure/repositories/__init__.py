@@ -1,6 +1,7 @@
 """DRF-backed implementations of the budget repository ports."""
 
 from .analytics_repository import DRFAnalyticsRepository
+from .credit_card_payment_repository import DRFCreditCardPaymentRepository
 from .dashboard_repository import DRFDashboardRepository
 from .funding_account_repository import DRFFundingAccountRepository
 from .transaction_repository import DRFTransactionRepository
@@ -10,4 +11,5 @@ __all__ = [
     "DRFDashboardRepository",
     "DRFFundingAccountRepository",
     "DRFAnalyticsRepository",
+    "DRFCreditCardPaymentRepository",
 ]

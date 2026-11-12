@@ -151,3 +151,17 @@ class DRFAnalyticsResponse(BaseModel):
     period: AnalyticsPeriod
     group_by: AnalyticsGroupBy
     data: list[DRFAnalyticsRowResponse]
+
+
+class DRFCreditCardPaymentResponse(BaseModel):
+    """Confirmation returned by POST /accounts/{id}/pay-credit-card/.
+
+    Matches ``CreditCardPaymentSerializer``: the backend echoes the card it
+    settled, the account the money came from, and the amount it moved.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    detail: str
+    account_id: str
+    funding_account_id: str
+    amount: str
