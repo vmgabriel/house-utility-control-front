@@ -21,11 +21,55 @@ class DRFTransactionRepository:
         self.api_client = api_client
 
     async def list_transactions(
-        self, access_token: str, page: int = 1, page_size: int = 20
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[Transaction]:
-        data = await self.api_client.list_transactions(access_token, page, page_size)
+        data = await self.api_client.list_transactions(
+            access_token,
+            page,
+            page_size,
+            account_id=account_id,
+            account_type=account_type,
+            transaction_type=transaction_type,
+            date_from=date_from,
+            date_to=date_to,
+        )
         paginated = DRFPaginatedTransactionsResponse.model_validate(data)
         return [map_transaction_response(tx) for tx in paginated.results]
+
+    async def list_transactions_page(
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> tuple[list[Transaction], int]:
+        data = await self.api_client.list_transactions(
+            access_token,
+            page,
+            page_size,
+            account_id=account_id,
+            account_type=account_type,
+            transaction_type=transaction_type,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        paginated = DRFPaginatedTransactionsResponse.model_validate(data)
+        items = [map_transaction_response(tx) for tx in paginated.results]
+        return items, paginated.count
 
     async def get_transaction(
         self, access_token: str, transaction_id: TransactionId

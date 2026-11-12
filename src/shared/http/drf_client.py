@@ -152,13 +152,33 @@ class DRFAPIClient:
         return body
 
     async def list_transactions(
-        self, access_token: str, page: int = 1, page_size: int = 20
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> dict:
+        params: dict[str, object] = {"page": page, "page_size": page_size}
+        if account_id:
+            params["account_id"] = account_id
+        if account_type:
+            params["account_type"] = account_type
+        if transaction_type:
+            params["transaction_type"] = transaction_type
+        if date_from:
+            params["date_from"] = date_from
+        if date_to:
+            params["date_to"] = date_to
         status, body = await self._request(
             "GET",
             "/transactions/",
             access_token=access_token,
-            params={"page": page, "page_size": page_size},
+            params=params,
         )
         if status == 401:
             raise UnauthorizedError("Unauthorized", status_code=401)
@@ -562,6 +582,40 @@ class DRFAPIClient:
         if status >= 400:
             raise DRFAPIClientError(
                 "Failed to pay credit card", status_code=status, detail=body
+            )
+        return body
+
+    async def get_transaction_summary(
+        self,
+        access_token: str,
+        period: str,
+        account_id: str | None = None,
+    ) -> dict:
+        """Fetch period totals (today/week/month) for the dashboard cards.
+
+        ``period`` is one of ``today``, ``week``, ``month``. ``account_id`` is
+        sent only when one account is selected. A 404 surfaces as
+        ``NotFoundError`` so the caller can answer 404 instead of a generic
+        failure.
+        """
+        params = {"period": period}
+        if account_id:
+            params["account_id"] = account_id
+        status, body = await self._request(
+            "GET",
+            "/transactions/summary/",
+            access_token=access_token,
+            params=params,
+        )
+        if status == 401:
+            raise UnauthorizedError("Unauthorized", status_code=401)
+        if status == 404:
+            raise NotFoundError("Account not found", status_code=404)
+        if status >= 400:
+            raise DRFAPIClientError(
+                "Failed to fetch transaction summary",
+                status_code=status,
+                detail=body,
             )
         return body
 

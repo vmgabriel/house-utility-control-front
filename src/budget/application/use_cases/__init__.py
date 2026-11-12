@@ -15,12 +15,14 @@ from .payments import PayCreditCardUseCase
 from .transactions import (
     CreateTransactionUseCase,
     DeleteTransactionUseCase,
+    FetchTransactionsPageUseCase,
     FetchTransactionsUseCase,
     GetTransactionUseCase,
     UpdateTransactionUseCase,
 )
 
 __all__ = [
+    "FetchTransactionsPageUseCase",
     "FetchTransactionsUseCase",
     "GetTransactionUseCase",
     "CreateTransactionUseCase",

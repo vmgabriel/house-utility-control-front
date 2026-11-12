@@ -54,6 +54,51 @@
     </button>
 </div>
 
+<!-- Filters -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <form method="GET" action="{{ url_for('transactions.index') }}" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Cuenta</label>
+            <select name="account_id" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                <option value="">Todas</option>
+                {% for account in accounts %}
+                    <option value="{{ account.id }}" {% if filters.get('account_id') == account.id %}selected{% endif %}>{{ account.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Tipo de cuenta</label>
+            <select name="account_type" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                <option value="">Todas</option>
+                {% for value, label in [('credit_card','credit_card'),('debit','debit'),('cash','cash'),('savings','savings')] %}
+                    <option value="{{ value }}" {% if filters.get('account_type') == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Tipo de transacción</label>
+            <select name="transaction_type" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                <option value="">Todas</option>
+                {% for value, label in [('income','income'),('expense','expense'),('investment','investment'),('savings','savings')] %}
+                    <option value="{{ value }}" {% if filters.get('transaction_type') == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Desde</label>
+            <input type="date" name="date_from" value="{{ filters.get('date_from','') }}" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Hasta</label>
+            <input type="date" name="date_to" value="{{ filters.get('date_to','') }}" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+        </div>
+        <div class="flex items-end">
+            <button type="submit" class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700">Aplicar filtros</button>
+        </div>
+        <input type="hidden" name="page_size" value="{{ page_size }}">
+    </form>
+</div>
+
 <!-- Transactions List -->
 <div class="bg-white rounded-lg shadow">
     {% if transactions %}
@@ -90,8 +135,35 @@
                 </li>
             {% endfor %}
         </ul>
-        <nav class="px-6 py-4 border-t border-gray-200 text-sm text-gray-600" aria-label="Pagination">
-            Page {{ page }}
+        <nav class="px-6 py-4 border-t border-gray-200 text-sm text-gray-600 flex items-center justify-between" aria-label="Pagination">
+            <div>
+                {% if page > 1 %}
+                    <a href="{{ url_for('transactions.index', page=page-1, page_size=page_size, **filters) }}" class="text-blue-600 hover:underline">Anterior</a>
+                {% else %}
+                    <span class="text-gray-400">Anterior</span>
+                {% endif %}
+            </div>
+            <div>Page {{ page }}</div>
+            <div>Página {{ page }} de {{ total_pages }}</div>
+            <form method="GET" action="{{ url_for('transactions.index') }}" class="inline-flex items-center space-x-2">
+                {% for k,v in filters.items() %}
+                    <input type="hidden" name="{{ k }}" value="{{ v }}">
+                {% endfor %}
+                <input type="hidden" name="page" value="1">
+                <select name="page_size" class="px-2 py-1 border border-gray-300 rounded">
+                    {% for size in [20,50,100] %}
+                        <option value="{{ size }}" {% if page_size == size %}selected{% endif %}>{{ size }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="text-blue-600 hover:underline">Aplicar</button>
+            </form>
+            <div>
+                {% if page < total_pages %}
+                    <a href="{{ url_for('transactions.index', page=page+1, page_size=page_size, **filters) }}" class="text-blue-600 hover:underline">Siguiente</a>
+                {% else %}
+                    <span class="text-gray-400">Siguiente</span>
+                {% endif %}
+            </div>
         </nav>
     {% else %}
         <div class="p-12 text-center text-gray-500">

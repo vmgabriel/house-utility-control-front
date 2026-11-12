@@ -145,6 +145,7 @@
                 // applied the directives before Chart.js measures them.
                 await Alpine.nextTick();
                 await this.loadAnalytics();
+                await this.loadCards();
             },
             async loadAnalytics() {
                 this.loading = true;
@@ -190,6 +191,56 @@
                 this.renderChart();
                 await Alpine.nextTick();
                 if (this.chart) this.chart.resize();
+            },
+            async loadCards() {
+                const periods = ['today', 'week', 'month'];
+                const titles = ['Today', 'This Week', 'This Month'];
+                const fetches = periods.map((period) => {
+                    let url = `/transactions/summary/?period=${encodeURIComponent(period)}`;
+                    if (this.accountId && this.accountId !== 'all') {
+                        url += `&account_id=${encodeURIComponent(this.accountId)}`;
+                    }
+                    return fetch(url, {
+                        headers: { Accept: 'application/json' },
+                        credentials: 'same-origin',
+                    })
+                        .then((response) => (response.ok ? response.json() : null))
+                        .catch(() => null);
+                });
+                const results = await Promise.all(fetches);
+                results.forEach((data, index) => {
+                    this.applyCardData(titles[index], data);
+                });
+            },
+            applyCardData(title, data) {
+                const card = Array.from(document.querySelectorAll('section')).find(
+                    (section) => {
+                        const heading = section.querySelector('h2');
+                        return heading && heading.textContent.trim() === title;
+                    }
+                );
+                if (!card) return;
+                const net = card.querySelector('h2 + p');
+                const incomeDd = card.querySelector('dl > div:nth-child(1) dd');
+                const expenseDd = card.querySelector('dl > div:nth-child(2) dd');
+                const investmentDd = card.querySelector('dl > div:nth-child(3) dd');
+                const savingsDd = card.querySelector('dl > div:nth-child(4) dd');
+                if (!data) {
+                    if (net) net.textContent = '$0.00';
+                    if (incomeDd) incomeDd.textContent = '$0.00';
+                    if (expenseDd) expenseDd.textContent = '$0.00';
+                    if (investmentDd) investmentDd.textContent = '$0.00';
+                    if (savingsDd) savingsDd.textContent = '$0.00';
+                    return;
+                }
+                const income = Number(data.income || 0);
+                const expense = Number(data.expense || 0);
+                const netValue = income - expense;
+                if (net) net.textContent = `$${netValue.toFixed(2)}`;
+                if (incomeDd) incomeDd.textContent = `$${income.toFixed(2)}`;
+                if (expenseDd) expenseDd.textContent = `$${expense.toFixed(2)}`;
+                if (investmentDd) investmentDd.textContent = `$${Number(data.investment || 0).toFixed(2)}`;
+                if (savingsDd) savingsDd.textContent = `$${Number(data.savings || 0).toFixed(2)}`;
             },
             async waitUntilVisible(canvasId) {
                 const wrapper = document.getElementById(canvasId)?.parentElement;
@@ -273,7 +324,7 @@
                     id="account-filter"
                     data-testid="account-filter"
                     x-model="accountId"
-                    @change="loadAnalytics()"
+                    @change="loadCards(); loadAnalytics()"
                     class="px-4 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
                     <option value="">All accounts</option>

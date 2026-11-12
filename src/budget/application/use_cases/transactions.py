@@ -15,11 +15,58 @@ class FetchTransactionsUseCase:
     transaction_repository: TransactionRepositoryPort
 
     async def execute(
-        self, access_token: str, page: int = 1, page_size: int = 20
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[Transaction]:
         """Fetch user's transactions."""
         return await self.transaction_repository.list_transactions(
-            access_token, page, page_size
+            access_token,
+            page,
+            page_size,
+            account_id=account_id,
+            account_type=account_type,
+            transaction_type=transaction_type,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+
+@dataclass
+class FetchTransactionsPageUseCase:
+    """Use case for fetching one page of transactions and its total count."""
+
+    transaction_repository: TransactionRepositoryPort
+
+    async def execute(
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> tuple[list[Transaction], int]:
+        """Fetch one page of transactions and its total count."""
+        return await self.transaction_repository.list_transactions_page(
+            access_token,
+            page,
+            page_size,
+            account_id=account_id,
+            account_type=account_type,
+            transaction_type=transaction_type,
+            date_from=date_from,
+            date_to=date_to,
         )
 
 

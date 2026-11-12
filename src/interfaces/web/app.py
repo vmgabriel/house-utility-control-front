@@ -19,6 +19,7 @@ from src.budget.application.use_cases import (
     CreateFundingAccountUseCase,
     CreateTransactionUseCase,
     DeleteTransactionUseCase,
+    FetchTransactionsPageUseCase,
     FetchTransactionsUseCase,
     GetDashboardOverviewUseCase,
     GetFundingAccountsUseCase,
@@ -217,6 +218,7 @@ def create_app() -> Flask:
     # substitute adapter or a frozen clock without reaching into this factory.
     app.extensions["rentals_api_client"] = rentals_client
     app.extensions["tasks_api_client"] = tasks_client
+    app.api_client = api_client
 
     # Initialize security managers
     cookie_config = CookieConfig(
@@ -264,11 +266,18 @@ def create_app() -> Flask:
     safe_purchases_shopping_lists = refreshing(purchases_shopping_lists)
     safe_purchases_wishlist = refreshing(purchases_wishlist)
     safe_purchases_tags = refreshing(purchases_tags)
-
+    # The transaction summary endpoint is a thin proxy over DRF; it goes through
+    # the same auto-refreshing wrapper so an expired access token rotates rather
+    # than failing the dashboard cards.
+    safe_api_client = refreshing(api_client)
+    app.safe_api_client = safe_api_client
     app.auth_use_case = AuthenticateUserUseCase(auth_repository=auth_repo)
     app.logout_use_case = LogoutUserUseCase(auth_repository=auth_repo)
     app.refresh_token_use_case = RefreshTokenUseCase(auth_repository=auth_repo)
     app.fetch_transactions_use_case = FetchTransactionsUseCase(
+        transaction_repository=safe_transaction_repo
+    )
+    app.fetch_transactions_page_use_case = FetchTransactionsPageUseCase(
         transaction_repository=safe_transaction_repo
     )
     app.get_transaction_use_case = GetTransactionUseCase(

@@ -21,9 +21,33 @@ class TransactionRepositoryPort(Protocol):
     """Port for transaction operations."""
 
     async def list_transactions(
-        self, access_token: str, page: int = 1, page_size: int = 20
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[Transaction]:
         """List user's transactions."""
+        ...
+
+    async def list_transactions_page(
+        self,
+        access_token: str,
+        page: int = 1,
+        page_size: int = 20,
+        *,
+        account_id: str | None = None,
+        account_type: str | None = None,
+        transaction_type: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> tuple[list[Transaction], int]:
+        """List one page of transactions and return the total count."""
         ...
 
     async def get_transaction(

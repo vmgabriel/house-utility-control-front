@@ -8,6 +8,7 @@ from flask import (
     Blueprint,
     current_app,
     flash,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -18,7 +19,6 @@ from src.budget.application.use_cases.accounts import GetFundingAccountsUseCase
 from src.budget.application.use_cases.transactions import (
     CreateTransactionUseCase,
     DeleteTransactionUseCase,
-    FetchTransactionsUseCase,
 )
 from src.budget.domain.entities import DEFAULT_CATEGORY, Transaction
 from src.budget.domain.exceptions import DomainException
@@ -35,7 +35,7 @@ from src.budget.interfaces.viewmodels import (
 )
 from src.shared.auth.csrf import CSRFTokenManager
 from src.shared.auth.jwt_cookie_manager import JWTCookieManager
-from src.shared.http.drf_client import ServiceUnavailableError
+from src.shared.http.drf_client import NotFoundError, ServiceUnavailableError
 
 transactions_bp = Blueprint("transactions", __name__, url_prefix="/transactions")
 
@@ -58,9 +58,34 @@ def _requested_page() -> int:
     """Read the ``page`` query argument, falling back to 1 when unusable."""
     try:
         page = int(request.args.get("page", 1))
-    except ValueError:
+    except (TypeError, ValueError):
         return 1
     return page if page >= 1 else 1
+
+
+def _requested_page_size() -> int:
+    try:
+        size = int(request.args.get("page_size", PAGE_SIZE))
+    except (TypeError, ValueError):
+        return PAGE_SIZE
+    if size not in (20, 50, 100):
+        return PAGE_SIZE
+    return size
+
+
+def _requested_filters() -> dict[str, str]:
+    filters: dict[str, str] = {}
+    for key in (
+        "account_id",
+        "account_type",
+        "transaction_type",
+        "date_from",
+        "date_to",
+    ):
+        value = (request.args.get(key) or "").strip()
+        if value:
+            filters[key] = value
+    return filters
 
 
 @transactions_bp.route("/")
@@ -72,12 +97,17 @@ async def index():
     if not access_token:
         return redirect(url_for("auth.login"))
 
-    fetch_use_case: FetchTransactionsUseCase = current_app.fetch_transactions_use_case
     page = _requested_page()
+    page_size = _requested_page_size()
+    filters = _requested_filters()
 
+    fetch_page_use_case = current_app.fetch_transactions_page_use_case
     try:
-        transactions = await fetch_use_case.execute(
-            access_token, page=page, page_size=PAGE_SIZE
+        transactions, total = await fetch_page_use_case.execute(
+            access_token,
+            page=page,
+            page_size=page_size,
+            **filters,
         )
     except ServiceUnavailableError:
         # Backend unreachable: re-raise for the 503 page. An empty list would
@@ -86,12 +116,16 @@ async def index():
         raise
     except DomainException:
         transactions = []
+        total = 0
         flash("Failed to load transactions.", "error")
     except Exception:
         transactions = []
+        total = 0
         flash("Transactions could not be loaded right now.", "error")
 
     viewmodels = [TransactionViewModel.from_domain(tx) for tx in transactions]
+
+    total_pages = max(1, (total + page_size - 1) // page_size) if total else 1
 
     # Active funding accounts for the optional selector on the create form.
     # Best-effort on purpose: the selector is optional, so an unreachable or
@@ -114,6 +148,10 @@ async def index():
         "transactions/index.html",
         transactions=viewmodels,
         page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+        filters=filters,
         category_suggestions=CATEGORY_SUGGESTIONS,
         accounts=account_options,
         # Surfaced in a subtle badge so an operator can immediately see whether
@@ -196,6 +234,37 @@ async def create():
 
     flash("Transaction created successfully!", "success")
     return redirect(url_for("transactions.index"))
+
+
+@transactions_bp.route("/summary/", methods=["GET"])
+async def summary():
+    """Proxy period totals (today/week/month) to the DRF backend."""
+    cookie_manager: JWTCookieManager = current_app.cookie_manager
+    access_token = cookie_manager.get_access_token(request)
+    if not access_token:
+        return jsonify({"detail": "Authentication required."}), 401
+
+    period = (request.args.get("period") or "today").strip().lower()
+    if period not in {"today", "week", "month"}:
+        period = "today"
+    account_id = (request.args.get("account_id") or "").strip() or None
+
+    client = getattr(current_app, "safe_api_client", None) or getattr(
+        current_app, "api_client", None
+    )
+    if client is None:
+        return jsonify({"detail": "Backend client unavailable."}), 503
+
+    try:
+        payload = await client.get_transaction_summary(access_token, period, account_id)
+    except ServiceUnavailableError:
+        raise
+    except NotFoundError:
+        return jsonify({"detail": "Account not available."}), 404
+    except Exception:
+        return jsonify({"detail": "Summary could not be loaded."}), 502
+
+    return jsonify(payload)
 
 
 @transactions_bp.route("/<transaction_id>/delete", methods=["POST"])
